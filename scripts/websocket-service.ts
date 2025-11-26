@@ -46,6 +46,47 @@ if (!KALSHI_API_KEY_ID || !KALSHI_PRIVATE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// Kalshi authentication helper (copied from _shared/kalshiAuth.ts for standalone script)
+async function getKalshiAuthHeaders(method: string, path: string): Promise<Headers> {
+  const apiKeyId = Deno.env.get("KALSHI_API_KEY_ID");
+  const privateKeyPem = Deno.env.get("KALSHI_PRIVATE_KEY");
+
+  if (!apiKeyId) {
+    throw new Error("Missing KALSHI_API_KEY_ID environment variable");
+  }
+  if (!privateKeyPem) {
+    throw new Error("Missing KALSHI_PRIVATE_KEY environment variable");
+  }
+
+  const timestamp = Date.now().toString();
+  const message = timestamp + method.toUpperCase() + path;
+
+  const keyBuffer = pemToArrayBuffer(privateKeyPem);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBuffer,
+    { name: "RSA-PSS", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signature = await crypto.subtle.sign(
+    { name: "RSA-PSS", saltLength: 32 },
+    privateKey,
+    new TextEncoder().encode(message)
+  );
+
+  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+
+  const headers = new Headers();
+  headers.set("KALSHI-ACCESS-KEY", apiKeyId);
+  headers.set("KALSHI-ACCESS-TIMESTAMP", timestamp);
+  headers.set("KALSHI-ACCESS-SIGNATURE", signatureB64);
+  headers.set("Content-Type", "application/json");
+
+  return headers;
+}
+
 function pemToArrayBuffer(pem: string): ArrayBuffer {
   // Handle both PKCS#8 and PKCS#1 formats
   const pemHeaderPKCS8 = "-----BEGIN PRIVATE KEY-----";
@@ -230,6 +271,9 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
   }
 }
 
+// Track which markets have received updates recently
+const marketUpdateTracker = new Map<string, number>();
+
 async function handleMarketUpdate(message: any) {
   // Kalshi WebSocket message format:
   // - Message type: "ticker" (checked in the message handler above)
@@ -243,6 +287,9 @@ async function handleMarketUpdate(message: any) {
     console.warn("No market_ticker found in message data:", JSON.stringify(message).substring(0, 300));
     return;
   }
+  
+  // Track that this market received an update
+  marketUpdateTracker.set(ticker, Date.now());
 
   // Kalshi ticker message has yes_bid, yes_ask, no_bid, no_ask, price_dollars
   // price_dollars is the last trade price (0-1 range) for YES
@@ -280,6 +327,116 @@ async function handleMarketUpdate(message: any) {
     console.error(`Error updating ${ticker}:`, error);
   } else {
     console.log(`✅ Updated ${ticker} - yes: ${update.yes_price_last}, no: ${update.no_price_last}`);
+  }
+}
+
+// Periodically check for markets that haven't updated recently and refresh them via REST API
+async function refreshStaleMarkets() {
+  try {
+    // Get markets that haven't been updated in the last 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    
+    const { data: staleMarkets, error } = await supabase
+      .from("markets")
+      .select("venue_market_ticker")
+      .eq("venue", "kalshi")
+      .eq("status", "open")
+      .or(`updated_at.is.null,updated_at.lt.${fiveMinutesAgo}`)
+      .limit(50); // Refresh up to 50 markets at a time
+    
+    if (error) {
+      console.error("Error fetching stale markets:", error);
+      return;
+    }
+    
+    if (!staleMarkets || staleMarkets.length === 0) {
+      return;
+    }
+    
+    console.log(`🔄 Found ${staleMarkets.length} stale markets, refreshing via REST API...`);
+    
+    const staleTickers = staleMarkets.map((m: { venue_market_ticker: string }) => m.venue_market_ticker);
+    console.log(`📊 Stale markets (no update in 5+ min):`, staleTickers.slice(0, 10).join(", "), staleTickers.length > 10 ? `... and ${staleMarkets.length - 10} more` : "");
+    
+    // Refresh markets via REST API in batches
+    const KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2";
+    const batchSize = 10;
+    
+    for (let i = 0; i < staleTickers.length; i += batchSize) {
+      const batch = staleTickers.slice(i, i + batchSize);
+      
+      try {
+        // Fetch market data for this batch
+        const tickerParam = batch.join(",");
+        const path = `/markets?tickers=${tickerParam}`;
+        const headers = await getKalshiAuthHeaders("GET", path);
+        
+        const response = await fetch(`${KALSHI_BASE}${path}`, {
+          method: "GET",
+          headers: headers,
+        });
+        
+        if (!response.ok) {
+          console.error(`Failed to fetch markets batch: ${response.status} ${response.statusText}`);
+          continue;
+        }
+        
+        const data = await response.json();
+        const markets = data.markets || [];
+        
+        // Update each market in the database
+        for (const market of markets) {
+          let yesPrice = market.yes_price ?? market.yes_bid ?? market.yes_ask ?? null;
+          let noPrice = market.no_price ?? market.no_bid ?? market.no_ask ?? null;
+          
+          // Convert from cents to decimal if needed
+          if (yesPrice !== null && yesPrice > 1) {
+            yesPrice = yesPrice / 100;
+          }
+          if (noPrice !== null && noPrice > 1) {
+            noPrice = noPrice / 100;
+          }
+          
+          const update: any = {
+            yes_price_last: yesPrice,
+            no_price_last: noPrice,
+            volume: market.volume ?? null,
+            status: market.status || "open",
+            updated_at: new Date().toISOString(),
+          };
+          
+          // Remove null values
+          Object.keys(update).forEach(key => {
+            if (update[key] === null || update[key] === undefined) {
+              delete update[key];
+            }
+          });
+          
+          const { error: updateError } = await supabase
+            .from("markets")
+            .update(update)
+            .eq("venue", "kalshi")
+            .eq("venue_market_ticker", market.ticker);
+          
+          if (updateError) {
+            console.error(`Error updating stale market ${market.ticker}:`, updateError);
+          } else {
+            console.log(`✅ Refreshed stale market ${market.ticker} via REST API`);
+            marketUpdateTracker.set(market.ticker, Date.now());
+          }
+        }
+        
+        // Rate limit: wait 1 second between batches
+        if (i + batchSize < staleTickers.length) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      } catch (batchError) {
+        console.error(`Error refreshing batch:`, batchError);
+      }
+    }
+    
+  } catch (error) {
+    console.error("Error in refreshStaleMarkets:", error);
   }
 }
 
@@ -366,9 +523,33 @@ try {
   console.log("Signal listeners not available, continuing...");
 }
 
-// Keep process alive with a heartbeat
+// Keep process alive with a heartbeat and check for stale markets
 setInterval(() => {
   // Heartbeat to keep process alive
   console.log("💓 Service heartbeat");
+  
+  // Log update statistics
+  const now = Date.now();
+  const recentUpdates = Array.from(marketUpdateTracker.entries())
+    .filter(([_, timestamp]) => now - timestamp < 60000) // Updates in last minute
+    .map(([ticker, _]) => ticker);
+  
+  console.log(`📊 Markets updated in last minute: ${recentUpdates.length}`);
+  if (recentUpdates.length > 0 && recentUpdates.length <= 10) {
+    console.log(`   Tickers: ${recentUpdates.join(", ")}`);
+  }
+  
+  // Clean up old tracker entries (older than 1 hour)
+  const oneHourAgo = now - 60 * 60 * 1000;
+  for (const [ticker, timestamp] of marketUpdateTracker.entries()) {
+    if (timestamp < oneHourAgo) {
+      marketUpdateTracker.delete(ticker);
+    }
+  }
 }, 60000);
+
+// Check for stale markets every 5 minutes
+setInterval(() => {
+  refreshStaleMarkets();
+}, 5 * 60 * 1000);
 
