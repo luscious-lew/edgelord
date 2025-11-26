@@ -224,21 +224,22 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 }
 
 async function handleMarketUpdate(message: any) {
-  // Kalshi WebSocket ticker format: { "type": "ticker", "data": { "market_ticker": "...", "bid": ..., "ask": ... } }
+  // Kalshi WebSocket ticker format: { "type": "ticker", "data": { "market_ticker": "...", "yes_bid": ..., "yes_ask": ... } }
   const data = message.data || message;
-  const ticker = data.market_ticker || data.ticker || message.ticker;
+  const ticker = data.market_ticker; // Kalshi uses "market_ticker" not "ticker"
+  
   if (!ticker) {
-    console.warn("No ticker found in message:", message);
+    console.warn("No market_ticker found in message:", JSON.stringify(message).substring(0, 200));
     return;
   }
 
-  // Kalshi ticker has "bid" and "ask" prices
-  // bid = yes price, ask = no price (or vice versa - need to check Kalshi docs)
-  // For now, map bid/ask to yes_price/no_price
+  // Kalshi ticker message has yes_bid, yes_ask, no_bid, no_ask, price_dollars
+  // price_dollars is the last trade price (0-1 range)
+  // yes_bid/yes_ask and no_bid/no_ask are in cents (0-100 range)
   const update: any = {
-    yes_price_last: data.bid || data.yes_price,
-    no_price_last: data.ask || data.no_price,
-    volume: data.volume || data.trade_volume,
+    yes_price_last: data.yes_ask ? data.yes_ask / 100 : (data.price_dollars ? parseFloat(data.price_dollars) : null),
+    no_price_last: data.no_ask ? data.no_ask / 100 : (data.price_dollars ? 1 - parseFloat(data.price_dollars) : null),
+    volume: data.dollar_volume || data.volume,
     status: data.status || "open",
     updated_at: new Date().toISOString(),
   };
@@ -259,13 +260,17 @@ async function handleMarketUpdate(message: any) {
   if (error) {
     console.error(`Error updating ${ticker}:`, error);
   } else {
-    console.log(`✅ Updated ${ticker} - bid: ${update.yes_price_last}, ask: ${update.no_price_last}`);
+    console.log(`✅ Updated ${ticker} - yes: ${update.yes_price_last}, no: ${update.no_price_last}`);
   }
 }
 
 async function handleOrderbookUpdate(message: any) {
-  const ticker = message.ticker || message.market_ticker;
-  if (!ticker) return;
+  const data = message.data || message;
+  const ticker = data.market_ticker; // Kalshi uses "market_ticker"
+  if (!ticker) {
+    console.warn("No market_ticker found in orderbook message");
+    return;
+  }
 
   const { data: market } = await supabase
     .from("markets")
