@@ -245,11 +245,19 @@ async function handleMarketUpdate(message: any) {
   }
 
   // Kalshi ticker message has yes_bid, yes_ask, no_bid, no_ask, price_dollars
-  // price_dollars is the last trade price (0-1 range)
+  // price_dollars is the last trade price (0-1 range) for YES
   // yes_bid/yes_ask and no_bid/no_ask are in cents (0-100 range)
+  // Note: Yes and No prices are independent - do NOT calculate one from the other
   const update: any = {
-    yes_price_last: data.yes_ask ? data.yes_ask / 100 : (data.price_dollars ? parseFloat(data.price_dollars) : null),
-    no_price_last: data.no_ask ? data.no_ask / 100 : (data.price_dollars ? 1 - parseFloat(data.price_dollars) : null),
+    // Use yes_ask directly, or fall back to price_dollars (which is the YES price)
+    yes_price_last: data.yes_ask !== undefined && data.yes_ask !== null 
+      ? data.yes_ask / 100 
+      : (data.price_dollars ? parseFloat(data.price_dollars) : null),
+    // Use no_ask directly - do NOT calculate as 1 - yes_price
+    // no_ask is independent and may not sum to 1 due to bid/ask spreads
+    no_price_last: data.no_ask !== undefined && data.no_ask !== null 
+      ? data.no_ask / 100 
+      : null,
     volume: data.dollar_volume || data.volume,
     status: data.status || "open",
     updated_at: new Date().toISOString(),
