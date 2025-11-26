@@ -123,16 +123,17 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 
     // According to Kalshi WebSocket docs, authentication must be in HEADERS, not query params
     // https://docs.kalshi.com/getting_started/quick_start_websockets
-    const headers: Record<string, string> = {
-      "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID!,
-      "KALSHI-ACCESS-SIGNATURE": signatureB64,
-      "KALSHI-ACCESS-TIMESTAMP": timestamp,
-    };
+    // Deno's WebSocket API requires Headers object, not plain object
+    const headers = new Headers();
+    headers.set("KALSHI-ACCESS-KEY", KALSHI_API_KEY_ID!);
+    headers.set("KALSHI-ACCESS-SIGNATURE", signatureB64);
+    headers.set("KALSHI-ACCESS-TIMESTAMP", timestamp);
 
     console.log("Connecting to Kalshi WebSocket with headers...");
     console.log("Signature length:", signatureB64.length);
+    console.log("Headers:", Object.fromEntries(headers.entries()));
     
-    // Deno WebSocket API supports headers as second parameter
+    // Deno WebSocket API: new WebSocket(url, protocols?, { headers })
     const ws = new WebSocket(KALSHI_WS_URL, [], { headers });
 
     ws.onopen = () => {
