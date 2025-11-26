@@ -90,6 +90,7 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
   try {
     const timestamp = Date.now().toString();
     const path = "/trade-api/ws/v2";
+    // According to Kalshi docs: timestamp + "GET" + "/trade-api/ws/v2"
     const message = timestamp + "GET" + path;
 
     console.log("Importing private key...");
@@ -119,36 +120,68 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
     );
 
     const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-    
-    // URL encode the signature (base64 can contain +, /, = which need encoding)
-    const encodedSignature = encodeURIComponent(signatureB64);
-    const encodedKey = encodeURIComponent(KALSHI_API_KEY_ID!);
-    
-    const wsUrl = `${KALSHI_WS_URL}?KALSHI-ACCESS-KEY=${encodedKey}&KALSHI-ACCESS-TIMESTAMP=${timestamp}&KALSHI-ACCESS-SIGNATURE=${encodedSignature}`;
 
-    console.log("Connecting to Kalshi WebSocket...");
-    console.log("URL (truncated):", wsUrl.substring(0, 100) + "...");
+    // According to Kalshi WebSocket docs, authentication must be in HEADERS, not query params
+    // https://docs.kalshi.com/getting_started/quick_start_websockets
+    const headers: Record<string, string> = {
+      "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID!,
+      "KALSHI-ACCESS-SIGNATURE": signatureB64,
+      "KALSHI-ACCESS-TIMESTAMP": timestamp,
+    };
+
+    console.log("Connecting to Kalshi WebSocket with headers...");
     console.log("Signature length:", signatureB64.length);
     
-    const ws = new WebSocket(wsUrl);
+    // Deno WebSocket API supports headers as second parameter
+    const ws = new WebSocket(KALSHI_WS_URL, [], { headers });
 
     ws.onopen = () => {
       console.log("✅ Connected to Kalshi WebSocket");
+      // According to Kalshi docs, subscription format is:
+      // { "id": 1, "cmd": "subscribe", "params": { "channels": ["ticker"] } }
       ws.send(JSON.stringify({
-        type: "subscribe",
-        channels: ["market_data"],
+        id: 1,
+        cmd: "subscribe",
+        params: {
+          channels: ["ticker"], // Subscribe to ticker updates for all markets
+        },
       }));
+      console.log("📤 Sent subscription request");
     };
 
     ws.onmessage = async (event) => {
       try {
         const message = JSON.parse(event.data);
-        console.log("📨 Received:", message.type);
+        const msgType = message.type;
+        console.log("📨 Received message type:", msgType);
 
-        if (message.type === "market_update" || message.type === "trade") {
+        // Handle subscription confirmation
+        if (msgType === "subscribed") {
+          console.log("✅ Successfully subscribed:", message);
+          return;
+        }
+
+        // Handle ticker updates (real-time price updates)
+        if (msgType === "ticker") {
           await handleMarketUpdate(message);
-        } else if (message.type === "orderbook_update") {
+        }
+        // Handle orderbook updates
+        else if (msgType === "orderbook_snapshot" || msgType === "orderbook_delta") {
           await handleOrderbookUpdate(message);
+        }
+        // Handle trade updates
+        else if (msgType === "trades") {
+          await handleMarketUpdate(message);
+        }
+        // Handle errors
+        else if (msgType === "error") {
+          const errorCode = message.msg?.code;
+          const errorMsg = message.msg?.msg;
+          console.error(`❌ WebSocket error ${errorCode}: ${errorMsg}`);
+        }
+        // Log unknown message types
+        else {
+          console.log("📨 Unknown message type:", msgType, message);
         }
       } catch (error) {
         console.error("Error processing message:", error);
@@ -184,14 +217,22 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 }
 
 async function handleMarketUpdate(message: any) {
-  const ticker = message.ticker || message.market_ticker;
-  if (!ticker) return;
+  // Kalshi WebSocket ticker format: { "type": "ticker", "data": { "market_ticker": "...", "bid": ..., "ask": ... } }
+  const data = message.data || message;
+  const ticker = data.market_ticker || data.ticker || message.ticker;
+  if (!ticker) {
+    console.warn("No ticker found in message:", message);
+    return;
+  }
 
+  // Kalshi ticker has "bid" and "ask" prices
+  // bid = yes price, ask = no price (or vice versa - need to check Kalshi docs)
+  // For now, map bid/ask to yes_price/no_price
   const update: any = {
-    yes_price_last: message.yes_price,
-    no_price_last: message.no_price,
-    volume: message.volume,
-    status: message.status,
+    yes_price_last: data.bid || data.yes_price,
+    no_price_last: data.ask || data.no_price,
+    volume: data.volume || data.trade_volume,
+    status: data.status || "open",
     updated_at: new Date().toISOString(),
   };
 
@@ -211,7 +252,7 @@ async function handleMarketUpdate(message: any) {
   if (error) {
     console.error(`Error updating ${ticker}:`, error);
   } else {
-    console.log(`✅ Updated ${ticker}`);
+    console.log(`✅ Updated ${ticker} - bid: ${update.yes_price_last}, ask: ${update.no_price_last}`);
   }
 }
 
