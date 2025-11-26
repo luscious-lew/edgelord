@@ -231,7 +231,7 @@ export function MarketsTable() {
                 No
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-edgelord-text-muted uppercase tracking-wider">
-                Volume
+                Volume ($)
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-edgelord-text-muted uppercase tracking-wider">
                 Last Update
@@ -248,11 +248,26 @@ export function MarketsTable() {
                   {market.title}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-muted">
-                  {market.status}
+                  <span 
+                    className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${
+                      market.status === 'open' ? 'bg-green-500/20 text-green-400' :
+                      market.status === 'closed' ? 'bg-yellow-500/20 text-yellow-400' :
+                      market.status === 'settled' ? 'bg-gray-500/20 text-gray-400' :
+                      'bg-gray-500/20 text-gray-400'
+                    }`}
+                    title={
+                      market.status === 'open' ? 'Market is open for trading' :
+                      market.status === 'closed' ? 'Market is closed, no new trades' :
+                      market.status === 'settled' ? 'Market has been settled and resolved' :
+                      'Unknown status'
+                    }
+                  >
+                    {market.status}
+                  </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                   {market.yesPrice !== null ? (
-                    <div className={`flex items-center gap-1 transition-all duration-300 ${
+                    <div className={`flex items-center gap-1.5 transition-all duration-300 ${
                       market.yesPriceDirection === 'up' ? 'animate-pulse' : 
                       market.yesPriceDirection === 'down' ? '' : ''
                     }`}>
@@ -263,17 +278,17 @@ export function MarketsTable() {
                         {(market.yesPrice * 100).toFixed(1)}%
                       </span>
                       {market.yesPriceDirection === 'up' && (
-                        <span className="text-green-500 animate-bounce">↑</span>
+                        <span className="text-green-500 text-lg font-bold animate-bounce" title="Price increased">↑</span>
                       )}
                       {market.yesPriceDirection === 'down' && (
-                        <span className="text-red-500">↓</span>
+                        <span className="text-red-500 text-lg font-bold" title="Price decreased">↓</span>
                       )}
                     </div>
                   ) : '—'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                   {market.noPrice !== null ? (
-                    <div className={`flex items-center gap-1 transition-all duration-300 ${
+                    <div className={`flex items-center gap-1.5 transition-all duration-300 ${
                       market.noPriceDirection === 'up' ? 'animate-pulse' : 
                       market.noPriceDirection === 'down' ? '' : ''
                     }`}>
@@ -284,16 +299,18 @@ export function MarketsTable() {
                         {(market.noPrice * 100).toFixed(1)}%
                       </span>
                       {market.noPriceDirection === 'up' && (
-                        <span className="text-green-500 animate-bounce">↑</span>
+                        <span className="text-green-500 text-lg font-bold animate-bounce" title="Price increased">↑</span>
                       )}
                       {market.noPriceDirection === 'down' && (
-                        <span className="text-edgelord-edge-negative">↓</span>
+                        <span className="text-red-500 text-lg font-bold" title="Price decreased">↓</span>
                       )}
                     </div>
                   ) : '—'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-dim">
-                  {market.volume !== null ? market.volume.toLocaleString() : '—'}
+                  {market.volume !== null ? (
+                    <span title="Volume in dollars">${market.volume.toLocaleString()}</span>
+                  ) : '—'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-dim">
                   {market.updatedAt ? (
