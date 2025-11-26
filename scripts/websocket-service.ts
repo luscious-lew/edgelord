@@ -233,13 +233,14 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 async function handleMarketUpdate(message: any) {
   // Kalshi WebSocket message format:
   // - Message type: "ticker" (checked in the message handler above)
-  // - Message structure: { "type": "ticker", "data": { "market_ticker": "...", "yes_bid": ..., "yes_ask": ... } }
-  // - The field name within the data is "market_ticker" (not "ticker")
-  const data = message.data || message;
+  // - Message structure: { "type": "ticker", "sid": 1, "msg": { "market_ticker": "...", "yes_bid": ..., "yes_ask": ... } }
+  // - The actual data is in message.msg (not message.data)
+  // - The field name within msg is "market_ticker" (not "ticker")
+  const data = message.msg || message.data || message;
   const ticker = data.market_ticker; // Extract "market_ticker" field from the data (not the message type)
   
   if (!ticker) {
-    console.warn("No market_ticker found in message data:", JSON.stringify(message).substring(0, 200));
+    console.warn("No market_ticker found in message data:", JSON.stringify(message).substring(0, 300));
     return;
   }
 
@@ -275,10 +276,11 @@ async function handleMarketUpdate(message: any) {
 }
 
 async function handleOrderbookUpdate(message: any) {
-  const data = message.data || message;
+  // Kalshi orderbook message structure: { "type": "orderbook_snapshot", "msg": { "market_ticker": "...", ... } }
+  const data = message.msg || message.data || message;
   const ticker = data.market_ticker; // Kalshi uses "market_ticker"
   if (!ticker) {
-    console.warn("No market_ticker found in orderbook message");
+    console.warn("No market_ticker found in orderbook message:", JSON.stringify(message).substring(0, 300));
     return;
   }
 
