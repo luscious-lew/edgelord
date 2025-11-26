@@ -186,15 +186,25 @@ async function handleOrderbookUpdate(message: any) {
 
 // Start the WebSocket connection
 console.log("🚀 Starting Kalshi WebSocket service...");
+console.log("Environment check:");
+console.log("- SUPABASE_URL:", SUPABASE_URL ? "✅ Set" : "❌ Missing");
+console.log("- SUPABASE_SERVICE_ROLE_KEY:", SUPABASE_SERVICE_ROLE_KEY ? "✅ Set" : "❌ Missing");
+console.log("- KALSHI_API_KEY_ID:", KALSHI_API_KEY_ID ? "✅ Set" : "❌ Missing");
+console.log("- KALSHI_PRIVATE_KEY:", KALSHI_PRIVATE_KEY ? `✅ Set (${KALSHI_PRIVATE_KEY.length} chars)` : "❌ Missing");
 
 // Handle errors and keep process alive
 (async () => {
   try {
+    console.log("Attempting to connect to Kalshi WebSocket...");
     await connectKalshiWebSocket();
+    console.log("WebSocket connection initiated successfully");
   } catch (error) {
     console.error("❌ Failed to start WebSocket connection:", error);
+    console.error("Error details:", error.message);
+    console.error("Stack:", error.stack);
     console.log("Retrying in 10 seconds...");
     setTimeout(() => {
+      console.log("Retrying connection...");
       connectKalshiWebSocket().catch((err) => {
         console.error("Retry failed:", err);
       });
