@@ -1,0 +1,10 @@
+FROM denoland/deno:latest
+
+WORKDIR /app
+
+# Copy the websocket service script
+COPY scripts/websocket-service.ts .
+
+# Run the service
+CMD ["deno", "run", "--allow-net", "--allow-env", "websocket-service.ts"]
+

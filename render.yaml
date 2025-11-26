@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: kalshi-websocket-stream
+    runtime: docker
+    dockerfilePath: ./Dockerfile.websocket
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY
+        sync: false
+    healthCheckPath: /health
+

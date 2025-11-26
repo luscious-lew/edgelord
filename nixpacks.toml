@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["deno"]
+
+[phases.install]
+cmds = ["echo 'Deno will be used from nixpkgs'"]
+
+[phases.build]
+cmds = ["echo 'No build step needed for Deno'"]
+
+[start]
+cmd = "cd /app && deno run --allow-net --allow-env scripts/websocket-service.ts"
+
