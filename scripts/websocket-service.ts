@@ -15,6 +15,8 @@
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// Use ws library which supports custom headers
+import WebSocket from "https://esm.sh/ws@8.18.0";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -88,10 +90,12 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
 
 async function connectKalshiWebSocket(): Promise<WebSocket> {
   try {
+    // According to Kalshi docs: timestamp + method + path.split('?')[0]
+    // Python example: timestamp + "GET" + "/trade-api/ws/v2"
     const timestamp = Date.now().toString();
+    const method = "GET";
     const path = "/trade-api/ws/v2";
-    // According to Kalshi docs: timestamp + "GET" + "/trade-api/ws/v2"
-    const message = timestamp + "GET" + path;
+    const message = timestamp + method + path;
 
     console.log("Importing private key...");
     console.log("Key preview:", KALSHI_PRIVATE_KEY?.substring(0, 50) + "...");
@@ -123,18 +127,22 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 
     // According to Kalshi WebSocket docs, authentication must be in HEADERS, not query params
     // https://docs.kalshi.com/getting_started/quick_start_websockets
-    // Deno's WebSocket API requires Headers object, not plain object
-    const headers = new Headers();
-    headers.set("KALSHI-ACCESS-KEY", KALSHI_API_KEY_ID!);
-    headers.set("KALSHI-ACCESS-SIGNATURE", signatureB64);
-    headers.set("KALSHI-ACCESS-TIMESTAMP", timestamp);
+    // Python example uses: websockets.connect(WS_URL, additional_headers=ws_headers)
+    // We'll use the ws library which supports headers via options.headers
+    const headers: Record<string, string> = {
+      "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID!,
+      "KALSHI-ACCESS-SIGNATURE": signatureB64,
+      "KALSHI-ACCESS-TIMESTAMP": timestamp,
+    };
 
     console.log("Connecting to Kalshi WebSocket with headers...");
     console.log("Signature length:", signatureB64.length);
-    console.log("Headers:", Object.fromEntries(headers.entries()));
+    console.log("Headers:", Object.keys(headers));
     
-    // Deno WebSocket API: new WebSocket(url, protocols?, { headers })
-    const ws = new WebSocket(KALSHI_WS_URL, [], { headers });
+    // Use ws library which supports custom headers
+    const ws = new WebSocket(KALSHI_WS_URL, {
+      headers: headers,
+    });
 
     ws.onopen = () => {
       console.log("✅ Connected to Kalshi WebSocket");
@@ -150,9 +158,10 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
       console.log("📤 Sent subscription request");
     };
 
-    ws.onmessage = async (event) => {
+    ws.on("message", async (data: Buffer | string) => {
       try {
-        const message = JSON.parse(event.data);
+        const messageStr = typeof data === "string" ? data : data.toString();
+        const message = JSON.parse(messageStr);
         const msgType = message.type;
         console.log("📨 Received message type:", msgType);
 
@@ -187,28 +196,25 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
       } catch (error) {
         console.error("Error processing message:", error);
       }
-    };
+    });
 
-    ws.onerror = (error) => {
-      console.error("❌ WebSocket error:", error);
-      // Log more details if available
-      if (error instanceof ErrorEvent) {
-        console.error("Error message:", error.message);
-        console.error("Error type:", error.type);
-      }
-    };
+    ws.on("error", (error: Error) => {
+      console.error("❌ WebSocket error:", error.message);
+      console.error("Error stack:", error.stack);
+    });
 
-    ws.onclose = (event) => {
-      console.log(`⚠️ WebSocket closed (code: ${event.code}, reason: ${event.reason || 'none'}), reconnecting in 5 seconds...`);
-      if (event.code !== 1000 && event.code !== 1001) {
-        console.error(`Connection closed abnormally. Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}`);
+    ws.on("close", (code: number, reason: Buffer) => {
+      const reasonStr = reason ? reason.toString() : "none";
+      console.log(`⚠️ WebSocket closed (code: ${code}, reason: ${reasonStr}), reconnecting in 5 seconds...`);
+      if (code !== 1000 && code !== 1001) {
+        console.error(`Connection closed abnormally. Code: ${code}, Reason: ${reasonStr}`);
       }
       setTimeout(() => {
         connectKalshiWebSocket().catch((err) => {
           console.error("Failed to reconnect:", err);
         });
       }, 5000);
-    };
+    });
 
     return ws;
   } catch (error) {
