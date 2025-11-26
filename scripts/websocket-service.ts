@@ -15,8 +15,7 @@
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-// Use ws library which supports custom headers
-import WebSocket from "https://esm.sh/ws@8.18.0";
+import WebSocket from "npm:ws@8.18.0";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -139,12 +138,13 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
     console.log("Signature length:", signatureB64.length);
     console.log("Headers:", Object.keys(headers));
     
-    // Use ws library which supports custom headers
+    // Use ws library from npm which supports custom headers via options
+    // The npm: specifier ensures proper Node.js compatibility in Deno
     const ws = new WebSocket(KALSHI_WS_URL, {
       headers: headers,
     });
 
-    ws.onopen = () => {
+    ws.on("open", () => {
       console.log("✅ Connected to Kalshi WebSocket");
       // According to Kalshi docs, subscription format is:
       // { "id": 1, "cmd": "subscribe", "params": { "channels": ["ticker"] } }
@@ -156,7 +156,7 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
         },
       }));
       console.log("📤 Sent subscription request");
-    };
+    });
 
     ws.on("message", async (data: Buffer | string) => {
       try {
@@ -315,8 +315,9 @@ console.log("- KALSHI_PRIVATE_KEY:", KALSHI_PRIVATE_KEY ? `✅ Set (${KALSHI_PRI
     console.log("WebSocket connection initiated successfully");
   } catch (error) {
     console.error("❌ Failed to start WebSocket connection:", error);
-    console.error("Error details:", error.message);
-    console.error("Stack:", error.stack);
+    const err = error as Error;
+    console.error("Error details:", err.message);
+    console.error("Stack:", err.stack);
     console.log("Retrying in 10 seconds...");
     setTimeout(() => {
       console.log("Retrying connection...");
