@@ -119,9 +119,17 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
     );
 
     const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-    const wsUrl = `${KALSHI_WS_URL}?KALSHI-ACCESS-KEY=${KALSHI_API_KEY_ID}&KALSHI-ACCESS-TIMESTAMP=${timestamp}&KALSHI-ACCESS-SIGNATURE=${signatureB64}`;
+    
+    // URL encode the signature (base64 can contain +, /, = which need encoding)
+    const encodedSignature = encodeURIComponent(signatureB64);
+    const encodedKey = encodeURIComponent(KALSHI_API_KEY_ID!);
+    
+    const wsUrl = `${KALSHI_WS_URL}?KALSHI-ACCESS-KEY=${encodedKey}&KALSHI-ACCESS-TIMESTAMP=${timestamp}&KALSHI-ACCESS-SIGNATURE=${encodedSignature}`;
 
     console.log("Connecting to Kalshi WebSocket...");
+    console.log("URL (truncated):", wsUrl.substring(0, 100) + "...");
+    console.log("Signature length:", signatureB64.length);
+    
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -149,10 +157,18 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 
     ws.onerror = (error) => {
       console.error("❌ WebSocket error:", error);
+      // Log more details if available
+      if (error instanceof ErrorEvent) {
+        console.error("Error message:", error.message);
+        console.error("Error type:", error.type);
+      }
     };
 
     ws.onclose = (event) => {
-      console.log(`⚠️ WebSocket closed (code: ${event.code}), reconnecting in 5 seconds...`);
+      console.log(`⚠️ WebSocket closed (code: ${event.code}, reason: ${event.reason || 'none'}), reconnecting in 5 seconds...`);
+      if (event.code !== 1000 && event.code !== 1001) {
+        console.error(`Connection closed abnormally. Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}`);
+      }
       setTimeout(() => {
         connectKalshiWebSocket().catch((err) => {
           console.error("Failed to reconnect:", err);
