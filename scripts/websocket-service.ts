@@ -162,8 +162,14 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
       try {
         const messageStr = typeof data === "string" ? data : data.toString();
         const message = JSON.parse(messageStr);
+        
+        // Log full message structure for debugging
+        console.log("📨 Received message:", JSON.stringify(message).substring(0, 300));
+        
+        // Kalshi messages have a "type" field indicating the message type
+        // Message types include: "subscribed", "ticker", "orderbook_snapshot", "orderbook_delta", "trades", "error"
         const msgType = message.type;
-        console.log("📨 Received message type:", msgType);
+        console.log("📨 Message type:", msgType);
 
         // Handle subscription confirmation
         if (msgType === "subscribed") {
@@ -172,6 +178,7 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
         }
 
         // Handle ticker updates (real-time price updates)
+        // Message type is "ticker", and the data contains "market_ticker" field
         if (msgType === "ticker") {
           await handleMarketUpdate(message);
         }
@@ -191,7 +198,7 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
         }
         // Log unknown message types
         else {
-          console.log("📨 Unknown message type:", msgType, message);
+          console.log("📨 Unknown message type:", msgType, "Full message:", JSON.stringify(message).substring(0, 500));
         }
       } catch (error) {
         console.error("Error processing message:", error);
@@ -224,12 +231,15 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
 }
 
 async function handleMarketUpdate(message: any) {
-  // Kalshi WebSocket ticker format: { "type": "ticker", "data": { "market_ticker": "...", "yes_bid": ..., "yes_ask": ... } }
+  // Kalshi WebSocket message format:
+  // - Message type: "ticker" (checked in the message handler above)
+  // - Message structure: { "type": "ticker", "data": { "market_ticker": "...", "yes_bid": ..., "yes_ask": ... } }
+  // - The field name within the data is "market_ticker" (not "ticker")
   const data = message.data || message;
-  const ticker = data.market_ticker; // Kalshi uses "market_ticker" not "ticker"
+  const ticker = data.market_ticker; // Extract "market_ticker" field from the data (not the message type)
   
   if (!ticker) {
-    console.warn("No market_ticker found in message:", JSON.stringify(message).substring(0, 200));
+    console.warn("No market_ticker found in message data:", JSON.stringify(message).substring(0, 200));
     return;
   }
 
