@@ -3,6 +3,22 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
+function formatTimeAgo(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  
+  if (diffSecs < 10) return 'just now';
+  if (diffSecs < 60) return `${diffSecs}s ago`;
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  
+  return date.toLocaleDateString();
+}
+
 type Market = {
   ticker: string;
   title: string;
@@ -10,20 +26,24 @@ type Market = {
   yesPrice: number | null;
   noPrice: number | null;
   volume: number | null;
+  updatedAt: string | null;
+  yesPriceDirection: 'up' | 'down' | 'neutral';
+  noPriceDirection: 'up' | 'down' | 'neutral';
 };
 
 export function MarketsTable() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(true);
+  const [previousPrices, setPreviousPrices] = useState<Record<string, { yesPrice: number | null; noPrice: number | null }>>({});
 
   useEffect(() => {
     // Initial fetch
     async function fetchMarkets() {
       const { data, error } = await supabase
         .from('markets')
-        .select('venue_market_ticker, title, status, yes_price_last, no_price_last, volume')
+        .select('venue_market_ticker, title, status, yes_price_last, no_price_last, volume, updated_at')
         .eq('venue', 'kalshi')
-        .order('volume', { ascending: false, nullsLast: true })
+        .order('volume', { ascending: false, nullsFirst: false })
         .limit(100);
 
       if (error) {
@@ -38,14 +58,26 @@ export function MarketsTable() {
       }
 
       if (data) {
-        setMarkets(data.map((market) => ({
+        const marketsData = data.map((market) => ({
           ticker: market.venue_market_ticker,
           title: market.title,
           status: market.status || 'unknown',
           yesPrice: market.yes_price_last ? Number(market.yes_price_last) : null,
           noPrice: market.no_price_last ? Number(market.no_price_last) : null,
           volume: market.volume ? Number(market.volume) : null,
-        })));
+          updatedAt: market.updated_at || null,
+          yesPriceDirection: 'neutral' as const,
+          noPriceDirection: 'neutral' as const,
+        }));
+        
+        // Store initial prices for direction tracking
+        const initialPrices: Record<string, { yesPrice: number | null; noPrice: number | null }> = {};
+        marketsData.forEach(m => {
+          initialPrices[m.ticker] = { yesPrice: m.yesPrice, noPrice: m.noPrice };
+        });
+        setPreviousPrices(initialPrices);
+        
+        setMarkets(marketsData);
       }
       setLoading(false);
     }
@@ -70,12 +102,38 @@ export function MarketsTable() {
             setMarkets((prevMarkets) => {
               const updated = prevMarkets.map((market) => {
                 if (market.ticker === payload.new.venue_market_ticker) {
+                  const newYesPrice = payload.new.yes_price_last ? Number(payload.new.yes_price_last) : null;
+                  const newNoPrice = payload.new.no_price_last ? Number(payload.new.no_price_last) : null;
+                  
+                  // Calculate direction based on previous price
+                  const prev = previousPrices[market.ticker];
+                  let yesDirection: 'up' | 'down' | 'neutral' = 'neutral';
+                  let noDirection: 'up' | 'down' | 'neutral' = 'neutral';
+                  
+                  if (prev) {
+                    if (newYesPrice !== null && prev.yesPrice !== null) {
+                      yesDirection = newYesPrice > prev.yesPrice ? 'up' : newYesPrice < prev.yesPrice ? 'down' : 'neutral';
+                    }
+                    if (newNoPrice !== null && prev.noPrice !== null) {
+                      noDirection = newNoPrice > prev.noPrice ? 'up' : newNoPrice < prev.noPrice ? 'down' : 'neutral';
+                    }
+                  }
+                  
+                  // Update previous prices
+                  setPreviousPrices(prev => ({
+                    ...prev,
+                    [market.ticker]: { yesPrice: newYesPrice, noPrice: newNoPrice }
+                  }));
+                  
                   return {
                     ...market,
-                    yesPrice: payload.new.yes_price_last ? Number(payload.new.yes_price_last) : null,
-                    noPrice: payload.new.no_price_last ? Number(payload.new.no_price_last) : null,
+                    yesPrice: newYesPrice,
+                    noPrice: newNoPrice,
                     volume: payload.new.volume ? Number(payload.new.volume) : null,
                     status: payload.new.status || market.status,
+                    updatedAt: payload.new.updated_at || market.updatedAt,
+                    yesPriceDirection: yesDirection,
+                    noPriceDirection: noDirection,
                   };
                 }
                 return market;
@@ -88,15 +146,26 @@ export function MarketsTable() {
               const exists = prevMarkets.some(m => m.ticker === payload.new.venue_market_ticker);
               if (exists) return prevMarkets;
               
+              const newMarket = {
+                ticker: payload.new.venue_market_ticker,
+                title: payload.new.title,
+                status: payload.new.status || 'unknown',
+                yesPrice: payload.new.yes_price_last ? Number(payload.new.yes_price_last) : null,
+                noPrice: payload.new.no_price_last ? Number(payload.new.no_price_last) : null,
+                volume: payload.new.volume ? Number(payload.new.volume) : null,
+                updatedAt: payload.new.updated_at || null,
+                yesPriceDirection: 'neutral' as const,
+                noPriceDirection: 'neutral' as const,
+              };
+              
+              // Store initial prices
+              setPreviousPrices(prev => ({
+                ...prev,
+                [newMarket.ticker]: { yesPrice: newMarket.yesPrice, noPrice: newMarket.noPrice }
+              }));
+              
               return [
-                {
-                  ticker: payload.new.venue_market_ticker,
-                  title: payload.new.title,
-                  status: payload.new.status || 'unknown',
-                  yesPrice: payload.new.yes_price_last ? Number(payload.new.yes_price_last) : null,
-                  noPrice: payload.new.no_price_last ? Number(payload.new.no_price_last) : null,
-                  volume: payload.new.volume ? Number(payload.new.volume) : null,
-                },
+                newMarket,
                 ...prevMarkets,
               ].sort((a, b) => (b.volume || 0) - (a.volume || 0));
             });
@@ -164,6 +233,9 @@ export function MarketsTable() {
               <th className="px-6 py-3 text-left text-xs font-medium text-edgelord-text-muted uppercase tracking-wider">
                 Volume
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-edgelord-text-muted uppercase tracking-wider">
+                Last Update
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-edgelord-border">
@@ -178,18 +250,57 @@ export function MarketsTable() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-muted">
                   {market.status}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-edge-positive">
-                  {market.yesPrice !== null 
-                    ? `${(market.yesPrice * 100).toFixed(1)}%` 
-                    : '—'}
+                <td className="px-6 py-4 whitespace-nowrap text-sm">
+                  {market.yesPrice !== null ? (
+                    <div className={`flex items-center gap-1 transition-all duration-300 ${
+                      market.yesPriceDirection === 'up' ? 'animate-pulse' : 
+                      market.yesPriceDirection === 'down' ? '' : ''
+                    }`}>
+                      <span className={`text-edgelord-edge-positive ${
+                        market.yesPriceDirection === 'up' ? 'font-semibold' : 
+                        market.yesPriceDirection === 'down' ? 'opacity-70' : ''
+                      }`}>
+                        {(market.yesPrice * 100).toFixed(1)}%
+                      </span>
+                      {market.yesPriceDirection === 'up' && (
+                        <span className="text-green-500 animate-bounce">↑</span>
+                      )}
+                      {market.yesPriceDirection === 'down' && (
+                        <span className="text-red-500">↓</span>
+                      )}
+                    </div>
+                  ) : '—'}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-edge-negative">
-                  {market.noPrice !== null 
-                    ? `${(market.noPrice * 100).toFixed(1)}%` 
-                    : '—'}
+                <td className="px-6 py-4 whitespace-nowrap text-sm">
+                  {market.noPrice !== null ? (
+                    <div className={`flex items-center gap-1 transition-all duration-300 ${
+                      market.noPriceDirection === 'up' ? 'animate-pulse' : 
+                      market.noPriceDirection === 'down' ? '' : ''
+                    }`}>
+                      <span className={`text-edgelord-edge-negative ${
+                        market.noPriceDirection === 'up' ? 'font-semibold' : 
+                        market.noPriceDirection === 'down' ? 'opacity-70' : ''
+                      }`}>
+                        {(market.noPrice * 100).toFixed(1)}%
+                      </span>
+                      {market.noPriceDirection === 'up' && (
+                        <span className="text-green-500 animate-bounce">↑</span>
+                      )}
+                      {market.noPriceDirection === 'down' && (
+                        <span className="text-edgelord-edge-negative">↓</span>
+                      )}
+                    </div>
+                  ) : '—'}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-dim">
                   {market.volume !== null ? market.volume.toLocaleString() : '—'}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-edgelord-text-dim">
+                  {market.updatedAt ? (
+                    <span title={new Date(market.updatedAt).toLocaleString()}>
+                      {formatTimeAgo(market.updatedAt)}
+                    </span>
+                  ) : '—'}
                 </td>
               </tr>
             ))}
