@@ -22,13 +22,24 @@ const KALSHI_API_KEY_ID = Deno.env.get("KALSHI_API_KEY_ID");
 const KALSHI_PRIVATE_KEY = Deno.env.get("KALSHI_PRIVATE_KEY");
 const KALSHI_WS_URL = Deno.env.get("KALSHI_WS_URL") || "wss://api.elections.kalshi.com/trade-api/ws/v2";
 
+// Debug: Log all environment variable names (not values for security)
+console.log("Environment variables check:");
+console.log("- SUPABASE_URL:", SUPABASE_URL ? `✅ Set (${SUPABASE_URL.length} chars)` : "❌ Missing");
+console.log("- SUPABASE_SERVICE_ROLE_KEY:", SUPABASE_SERVICE_ROLE_KEY ? `✅ Set (${SUPABASE_SERVICE_ROLE_KEY.length} chars)` : "❌ Missing");
+console.log("- KALSHI_API_KEY_ID:", KALSHI_API_KEY_ID ? `✅ Set (${KALSHI_API_KEY_ID.length} chars)` : "❌ Missing");
+console.log("- KALSHI_PRIVATE_KEY:", KALSHI_PRIVATE_KEY ? `✅ Set (${KALSHI_PRIVATE_KEY.length} chars)` : "❌ Missing");
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Missing Supabase credentials");
+  console.error("❌ Missing Supabase credentials");
+  console.error("SUPABASE_URL:", SUPABASE_URL ? "present" : "MISSING");
+  console.error("SUPABASE_SERVICE_ROLE_KEY:", SUPABASE_SERVICE_ROLE_KEY ? "present" : "MISSING");
   Deno.exit(1);
 }
 
 if (!KALSHI_API_KEY_ID || !KALSHI_PRIVATE_KEY) {
-  console.error("Missing Kalshi credentials");
+  console.error("❌ Missing Kalshi credentials");
+  console.error("KALSHI_API_KEY_ID:", KALSHI_API_KEY_ID ? "present" : "MISSING");
+  console.error("KALSHI_PRIVATE_KEY:", KALSHI_PRIVATE_KEY ? "present" : "MISSING");
   Deno.exit(1);
 }
 
