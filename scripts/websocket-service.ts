@@ -35,18 +35,43 @@ if (!KALSHI_API_KEY_ID || !KALSHI_PRIVATE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const pemHeader = "-----BEGIN PRIVATE KEY-----";
-  const pemFooter = "-----END PRIVATE KEY-----";
-  const pemContents = pem
-    .replace(pemHeader, "")
-    .replace(pemFooter, "")
-    .replace(/\s/g, "");
+  // Handle both PKCS#8 and PKCS#1 formats
+  const pemHeaderPKCS8 = "-----BEGIN PRIVATE KEY-----";
+  const pemFooterPKCS8 = "-----END PRIVATE KEY-----";
+  const pemHeaderPKCS1 = "-----BEGIN RSA PRIVATE KEY-----";
+  const pemFooterPKCS1 = "-----END RSA PRIVATE KEY-----";
+  
+  let pemContents = pem;
+  let isPKCS8 = false;
+  
+  if (pem.includes(pemHeaderPKCS8)) {
+    pemContents = pem
+      .replace(pemHeaderPKCS8, "")
+      .replace(pemFooterPKCS8, "")
+      .replace(/\s/g, "");
+    isPKCS8 = true;
+  } else if (pem.includes(pemHeaderPKCS1)) {
+    pemContents = pem
+      .replace(pemHeaderPKCS1, "")
+      .replace(pemFooterPKCS1, "")
+      .replace(/\s/g, "");
+    isPKCS8 = false;
+    console.warn("⚠️ PKCS#1 format detected. This may cause issues. Please convert to PKCS#8 format.");
+  } else {
+    // Try to parse as raw base64
+    pemContents = pem.replace(/\s/g, "");
+  }
 
   const binaryString = atob(pemContents);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
+  
+  if (!isPKCS8) {
+    throw new Error("Private key must be in PKCS#8 format (-----BEGIN PRIVATE KEY-----). Please convert your key using: openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in key.pem -out key-pkcs8.pem");
+  }
+  
   return bytes.buffer;
 }
 
@@ -57,9 +82,19 @@ async function connectKalshiWebSocket(): Promise<WebSocket> {
     const message = timestamp + "GET" + path;
 
     console.log("Importing private key...");
+    console.log("Key preview:", KALSHI_PRIVATE_KEY?.substring(0, 50) + "...");
+    
+    let keyBuffer: ArrayBuffer;
+    try {
+      keyBuffer = pemToArrayBuffer(KALSHI_PRIVATE_KEY!);
+    } catch (keyError: any) {
+      console.error("❌ Key parsing error:", keyError.message);
+      throw new Error(`Invalid key format: ${keyError.message}. Make sure the key is in PKCS#8 format with -----BEGIN PRIVATE KEY----- headers.`);
+    }
+    
     const privateKey = await crypto.subtle.importKey(
       "pkcs8",
-      pemToArrayBuffer(KALSHI_PRIVATE_KEY!),
+      keyBuffer,
       { name: "RSA-PSS", hash: "SHA-256" },
       false,
       ["sign"]
