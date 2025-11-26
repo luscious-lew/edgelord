@@ -50,64 +50,75 @@ function pemToArrayBuffer(pem: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-async function connectKalshiWebSocket() {
-  const timestamp = Date.now().toString();
-  const path = "/trade-api/ws/v2";
-  const message = timestamp + "GET" + path;
+async function connectKalshiWebSocket(): Promise<WebSocket> {
+  try {
+    const timestamp = Date.now().toString();
+    const path = "/trade-api/ws/v2";
+    const message = timestamp + "GET" + path;
 
-  const privateKey = await crypto.subtle.importKey(
-    "pkcs8",
-    pemToArrayBuffer(KALSHI_PRIVATE_KEY!),
-    { name: "RSA-PSS", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+    console.log("Importing private key...");
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      pemToArrayBuffer(KALSHI_PRIVATE_KEY!),
+      { name: "RSA-PSS", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
 
-  const signature = await crypto.subtle.sign(
-    { name: "RSA-PSS", saltLength: 32 },
-    privateKey,
-    new TextEncoder().encode(message)
-  );
+    console.log("Signing message...");
+    const signature = await crypto.subtle.sign(
+      { name: "RSA-PSS", saltLength: 32 },
+      privateKey,
+      new TextEncoder().encode(message)
+    );
 
-  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  const wsUrl = `${KALSHI_WS_URL}?KALSHI-ACCESS-KEY=${KALSHI_API_KEY_ID}&KALSHI-ACCESS-TIMESTAMP=${timestamp}&KALSHI-ACCESS-SIGNATURE=${signatureB64}`;
+    const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+    const wsUrl = `${KALSHI_WS_URL}?KALSHI-ACCESS-KEY=${KALSHI_API_KEY_ID}&KALSHI-ACCESS-TIMESTAMP=${timestamp}&KALSHI-ACCESS-SIGNATURE=${signatureB64}`;
 
-  console.log("Connecting to Kalshi WebSocket...");
-  const ws = new WebSocket(wsUrl);
+    console.log("Connecting to Kalshi WebSocket...");
+    const ws = new WebSocket(wsUrl);
 
-  ws.onopen = () => {
-    console.log("✅ Connected to Kalshi WebSocket");
-    ws.send(JSON.stringify({
-      type: "subscribe",
-      channels: ["market_data"],
-    }));
-  };
+    ws.onopen = () => {
+      console.log("✅ Connected to Kalshi WebSocket");
+      ws.send(JSON.stringify({
+        type: "subscribe",
+        channels: ["market_data"],
+      }));
+    };
 
-  ws.onmessage = async (event) => {
-    try {
-      const message = JSON.parse(event.data);
-      console.log("📨 Received:", message.type);
+    ws.onmessage = async (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        console.log("📨 Received:", message.type);
 
-      if (message.type === "market_update" || message.type === "trade") {
-        await handleMarketUpdate(message);
-      } else if (message.type === "orderbook_update") {
-        await handleOrderbookUpdate(message);
+        if (message.type === "market_update" || message.type === "trade") {
+          await handleMarketUpdate(message);
+        } else if (message.type === "orderbook_update") {
+          await handleOrderbookUpdate(message);
+        }
+      } catch (error) {
+        console.error("Error processing message:", error);
       }
-    } catch (error) {
-      console.error("Error processing message:", error);
-    }
-  };
+    };
 
-  ws.onerror = (error) => {
-    console.error("❌ WebSocket error:", error);
-  };
+    ws.onerror = (error) => {
+      console.error("❌ WebSocket error:", error);
+    };
 
-  ws.onclose = () => {
-    console.log("⚠️ WebSocket closed, reconnecting in 5 seconds...");
-    setTimeout(() => connectKalshiWebSocket(), 5000);
-  };
+    ws.onclose = (event) => {
+      console.log(`⚠️ WebSocket closed (code: ${event.code}), reconnecting in 5 seconds...`);
+      setTimeout(() => {
+        connectKalshiWebSocket().catch((err) => {
+          console.error("Failed to reconnect:", err);
+        });
+      }, 5000);
+    };
 
-  return ws;
+    return ws;
+  } catch (error) {
+    console.error("❌ Error connecting to WebSocket:", error);
+    throw error;
+  }
 }
 
 async function handleMarketUpdate(message: any) {
@@ -175,11 +186,43 @@ async function handleOrderbookUpdate(message: any) {
 
 // Start the WebSocket connection
 console.log("🚀 Starting Kalshi WebSocket service...");
-connectKalshiWebSocket();
 
-// Keep the process alive
-Deno.addSignalListener("SIGINT", () => {
-  console.log("\n👋 Shutting down...");
-  Deno.exit(0);
-});
+// Handle errors and keep process alive
+(async () => {
+  try {
+    await connectKalshiWebSocket();
+  } catch (error) {
+    console.error("❌ Failed to start WebSocket connection:", error);
+    console.log("Retrying in 10 seconds...");
+    setTimeout(() => {
+      connectKalshiWebSocket().catch((err) => {
+        console.error("Retry failed:", err);
+      });
+    }, 10000);
+  }
+})();
+
+// Keep the process alive and handle shutdown gracefully
+try {
+  if (typeof Deno !== "undefined" && typeof Deno.addSignalListener === "function") {
+    Deno.addSignalListener("SIGINT", () => {
+      console.log("\n👋 Shutting down...");
+      Deno.exit(0);
+    });
+    
+    Deno.addSignalListener("SIGTERM", () => {
+      console.log("\n👋 Shutting down...");
+      Deno.exit(0);
+    });
+  }
+} catch (e) {
+  // Signal listeners not available in this environment
+  console.log("Signal listeners not available, continuing...");
+}
+
+// Keep process alive with a heartbeat
+setInterval(() => {
+  // Heartbeat to keep process alive
+  console.log("💓 Service heartbeat");
+}, 60000);
 
