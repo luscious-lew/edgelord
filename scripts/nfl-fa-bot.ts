@@ -1165,6 +1165,18 @@ function findPlayerMarkets(playerName: string): PlayerMap | null {
   const key = normalizePlayerName(playerName);
   if (playerMarkets.has(key)) return playerMarkets.get(key)!;
 
+  // First/last name fuzzy match (handles "JK Dobbins" vs "J.K. Dobbins")
+  const keyParts = key.split(" ");
+  if (keyParts.length >= 2) {
+    for (const [k, pm] of playerMarkets) {
+      const kParts = k.split(" ");
+      if (kParts.length >= 2 && kParts[kParts.length - 1] === keyParts[keyParts.length - 1]) {
+        // Same last name — check first name starts with same letter
+        if (kParts[0][0] === keyParts[0][0]) return pm;
+      }
+    }
+  }
+
   // Case-insensitive match
   for (const [k, pm] of playerMarkets) {
     if (k === key) return pm;
@@ -1182,26 +1194,60 @@ function findPlayerMarkets(playerName: string): PlayerMap | null {
   return null;
 }
 
+// NFL team nickname → Kalshi-style city/name mapping
+const TEAM_ALIASES: Record<string, string[]> = {
+  "49ers": ["san francisco", "sf"], "bears": ["chicago", "chi"], "bengals": ["cincinnati", "cin"],
+  "bills": ["buffalo", "buf"], "broncos": ["denver", "den"], "browns": ["cleveland", "cle"],
+  "buccaneers": ["tampa bay", "tb", "bucs"], "cardinals": ["arizona", "ari"],
+  "chargers": ["los angeles c", "lac", "la chargers"], "chiefs": ["kansas city", "kc"],
+  "colts": ["indianapolis", "ind"], "commanders": ["washington", "was"],
+  "cowboys": ["dallas", "dal"], "dolphins": ["miami", "mia"], "eagles": ["philadelphia", "phi"],
+  "falcons": ["atlanta", "atl"], "giants": ["new york g", "nyg"], "jaguars": ["jacksonville", "jax"],
+  "jets": ["new york j", "nyj"], "lions": ["detroit", "det"], "packers": ["green bay", "gb"],
+  "panthers": ["carolina", "car"], "patriots": ["new england", "ne"], "raiders": ["las vegas", "lv"],
+  "rams": ["los angeles r", "lar", "la rams"], "ravens": ["baltimore", "bal"],
+  "saints": ["new orleans", "no"], "seahawks": ["seattle", "sea"], "steelers": ["pittsburgh", "pit"],
+  "texans": ["houston", "hou"], "titans": ["tennessee", "ten"], "vikings": ["minnesota", "min"],
+};
+
+function normalizeTeamName(name: string): string[] {
+  const lower = name.toLowerCase().trim();
+  const results = [lower];
+  // Check if the name is a nickname or contains one
+  for (const [nickname, aliases] of Object.entries(TEAM_ALIASES)) {
+    if (lower.includes(nickname) || aliases.some(a => lower.includes(a))) {
+      results.push(nickname, ...aliases);
+    }
+  }
+  // Also split "San Francisco 49ers" → ["san francisco", "49ers"]
+  const parts = lower.split(/\s+/);
+  if (parts.length > 1) results.push(parts[parts.length - 1]);
+  return [...new Set(results)];
+}
+
 function findNextTeamTicker(pm: PlayerMap, teamName: string): NFLMarket | null {
   if (!teamName) return null;
 
-  const teamLower = teamName.toLowerCase().trim();
+  const teamVariants = normalizeTeamName(teamName);
 
-  // Exact match on team name or ticker code
-  for (const [code, market] of pm.nextTeamMarkets) {
-    if (market.teamName?.toLowerCase() === teamLower) return market;
-    if (code.toLowerCase() === teamLower) return market;
-  }
+  // Try each variant
+  for (const variant of teamVariants) {
+    // Exact match on team name or ticker code
+    for (const [code, market] of pm.nextTeamMarkets) {
+      if (market.teamName?.toLowerCase() === variant) return market;
+      if (code.toLowerCase() === variant) return market;
+    }
 
-  // Case-insensitive partial match
-  for (const [code, market] of pm.nextTeamMarkets) {
-    const mTeam = market.teamName?.toLowerCase() ?? "";
-    if (mTeam.includes(teamLower) || teamLower.includes(mTeam)) return market;
-    if (code.toLowerCase().includes(teamLower) || teamLower.includes(code.toLowerCase())) return market;
+    // Partial match
+    for (const [code, market] of pm.nextTeamMarkets) {
+      const mTeam = market.teamName?.toLowerCase() ?? "";
+      if (mTeam.includes(variant) || variant.includes(mTeam)) return market;
+      if (code.toLowerCase().includes(variant) || variant.includes(code.toLowerCase())) return market;
+    }
   }
 
   // Partial/contains: check if team name words appear in market team name
-  const teamWords = teamLower.split(/\s+/);
+  const teamWords = teamName.toLowerCase().trim().split(/\s+/);
   for (const [_code, market] of pm.nextTeamMarkets) {
     const mTeam = market.teamName?.toLowerCase() ?? "";
     if (teamWords.some(w => w.length >= 3 && mTeam.includes(w))) return market;
@@ -1286,7 +1332,7 @@ async function executeTradesForSignal(signal: Signal): Promise<void> {
       if (pm.tradeMarket) {
         const dedupKey = `${signal.playerName.toLowerCase()}:${pm.tradeMarket.ticker}`;
         if (!tradedSignals.has(dedupKey) && pm.tradeMarket.yesPrice < 98) {
-          const qty = calculateQuantity(pm.tradeMarket.yesPrice, config.sizeMultiplier);
+          const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
           orders.push(placeOrder(pm.tradeMarket.ticker, "yes", config.maxPrice, qty, { ...signal, confidenceTier }));
         }
       }
@@ -1297,7 +1343,7 @@ async function executeTradesForSignal(signal: Signal): Promise<void> {
         if (nextTeamMarket) {
           const dedupKey = `${signal.playerName.toLowerCase()}:${nextTeamMarket.ticker}`;
           if (!tradedSignals.has(dedupKey) && nextTeamMarket.yesPrice < 98) {
-            const qty = calculateQuantity(nextTeamMarket.yesPrice, config.sizeMultiplier);
+            const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
             orders.push(placeOrder(nextTeamMarket.ticker, "yes", config.maxPrice, qty, { ...signal, confidenceTier }));
           }
         }
@@ -1306,15 +1352,31 @@ async function executeTradesForSignal(signal: Signal): Promise<void> {
     }
 
     case "signing": {
-      // BUY YES on NEXTTEAM only (signing ≠ trade per Kalshi rules)
+      // BUY YES on NEXTTEAM + BUY NO on NFLTRADE (signing means player won't be traded)
+      console.log(`[TRADE] Signing handler: dest=${signal.destinationTeam}, nextTeamMarkets=${pm.nextTeamMarkets.size}`);
+      if (pm.nextTeamMarkets.size > 0) {
+        // Log available teams for debugging
+        for (const [code, mkt] of pm.nextTeamMarkets) {
+          console.log(`[TRADE]   Available: ${code} → ${mkt.teamName} (${mkt.ticker})`);
+        }
+      }
       if (signal.destinationTeam) {
         const nextTeamMarket = findNextTeamTicker(pm, signal.destinationTeam);
+        console.log(`[TRADE] findNextTeamTicker result: ${nextTeamMarket?.ticker ?? "null"} for team "${signal.destinationTeam}" (yesPrice=${nextTeamMarket?.yesPrice ?? "?"})`);
         if (nextTeamMarket) {
           const dedupKey = `${signal.playerName.toLowerCase()}:${nextTeamMarket.ticker}`;
           if (!tradedSignals.has(dedupKey) && nextTeamMarket.yesPrice < 98) {
-            const qty = calculateQuantity(nextTeamMarket.yesPrice, config.sizeMultiplier);
+            const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
             orders.push(placeOrder(nextTeamMarket.ticker, "yes", config.maxPrice, qty, { ...signal, confidenceTier }));
           }
+        }
+      }
+      // Also BUY NO on NFLTRADE (signing means player won't be traded)
+      if (pm.tradeMarket) {
+        const dedupKey = `${signal.playerName.toLowerCase()}:${pm.tradeMarket.ticker}:no`;
+        if (!tradedSignals.has(dedupKey) && pm.tradeMarket.noPrice < 98) {
+          const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
+          orders.push(placeOrder(pm.tradeMarket.ticker, "no", config.maxPrice, qty, { ...signal, confidenceTier }));
         }
       }
       break;
@@ -1326,7 +1388,7 @@ async function executeTradesForSignal(signal: Signal): Promise<void> {
       if (pm.tradeMarket) {
         const dedupKey = `${signal.playerName.toLowerCase()}:${pm.tradeMarket.ticker}:no`;
         if (!tradedSignals.has(dedupKey) && pm.tradeMarket.noPrice < 98) {
-          const qty = calculateQuantity(pm.tradeMarket.noPrice, config.sizeMultiplier);
+          const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
           orders.push(placeOrder(pm.tradeMarket.ticker, "no", config.maxPrice, qty, { ...signal, confidenceTier }));
         }
       }
@@ -1338,7 +1400,7 @@ async function executeTradesForSignal(signal: Signal): Promise<void> {
       if (pm.tradeMarket) {
         const dedupKey = `${signal.playerName.toLowerCase()}:${pm.tradeMarket.ticker}:no`;
         if (!tradedSignals.has(dedupKey) && pm.tradeMarket.noPrice < 98) {
-          const qty = calculateQuantity(pm.tradeMarket.noPrice, config.sizeMultiplier);
+          const qty = calculateQuantity(config.maxPrice, config.sizeMultiplier);
           orders.push(placeOrder(pm.tradeMarket.ticker, "no", config.maxPrice, qty, { ...signal, confidenceTier }));
         }
       }
@@ -1976,6 +2038,60 @@ async function sendHeartbeat(): Promise<void> {
   }
 }
 
+async function replayUntradedSignals(): Promise<void> {
+  console.log("[REPLAY] Checking for untraded confirmed signals...");
+  try {
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const { data: signals, error } = await supabase
+      .from("nfl_signals")
+      .select("*")
+      .gte("created_at", cutoff)
+      .in("confidence_tier", ["confirmed", "strong_intel"])
+      .order("created_at", { ascending: true });
+
+    if (error || !signals || signals.length === 0) {
+      console.log("[REPLAY] No confirmed signals to replay");
+      return;
+    }
+
+    let replayed = 0;
+    for (const s of signals) {
+      const pm = findPlayerMarkets(s.player_name);
+      if (!pm) continue;
+
+      // Check if already traded (dedup key)
+      const tradeKey = `${s.player_name.toLowerCase()}:${pm.tradeMarket?.ticker ?? ""}`;
+      if (tradedSignals.has(tradeKey)) continue;
+
+      // Build signal object
+      const signal: Signal = {
+        id: s.id,
+        tweetId: s.meta?.tweet_id ?? "",
+        tweetText: s.raw_text ?? "",
+        sourceHandle: s.source_author ?? "",
+        sourceTier: s.source_tier ?? 1,
+        playerName: s.player_name,
+        eventType: s.event_type as EventType,
+        confidenceTier: s.confidence_tier as ConfidenceTier,
+        confidenceScore: s.confidence_score ?? 0,
+        destinationTeam: s.team,
+        sentiment: s.event_type === "trade" || s.event_type === "signing" ? "rising" : "falling",
+        timestamp: new Date(s.created_at).getTime(),
+        fastPathMatch: false,
+        llmClassification: s.llm_classification,
+      };
+
+      console.log(`[REPLAY] Replaying: ${signal.eventType} / ${signal.playerName} (${signal.confidenceTier})`);
+      await executeTradesForSignal(signal);
+      replayed++;
+    }
+
+    console.log(`[REPLAY] Done: ${replayed} signals replayed, ${signals.length} total checked`);
+  } catch (e) {
+    console.error("[REPLAY] Error:", e);
+  }
+}
+
 async function main(): Promise<void> {
   console.log("=".repeat(60));
   console.log("  NFL FREE AGENCY BOT — Starting Up");
@@ -1990,8 +2106,21 @@ async function main(): Promise<void> {
   // 2. Refresh markets
   await refreshMarkets();
 
+  // Debug: show player names in market map
+  console.log(`[MARKETS] Player map (${playerMarkets.size} players):`);
+  for (const [key, pm] of playerMarkets) {
+    const hasTrade = pm.tradeMarket ? `TRADE=${pm.tradeMarket.ticker}` : "no-trade";
+    const nextTeamCount = pm.nextTeamMarkets.size;
+    console.log(`  ${key}: ${hasTrade}, ${nextTeamCount} next-team markets`);
+  }
+
   // 3. Load context from Supabase
   await loadContext();
+
+  // 3.5. Replay untraded confirmed signals from DB (catches signals from when trading was disabled)
+  if (!NFL_TRADING_DISABLED) {
+    await replayUntradedSignals();
+  }
 
   // 4. Resolve Twitter user IDs
   await resolveUserIds();
