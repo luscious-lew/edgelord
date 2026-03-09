@@ -1481,9 +1481,18 @@ async function runDeepAnalysis(): Promise<void> {
     }
   }
 
-  // 3. Build market context string
+  // 3. Build market context string — skip resolved/maxed-out players
+  const resolvedPlayers = new Set<string>();
   let marketContext = "TRACKED PLAYERS & MARKETS:\n";
   for (const [key, pm] of playerMarkets) {
+    // Skip players where market is effectively resolved (>= 95¢ on any side)
+    const tradeYes = pm.tradeMarket?.yesPrice ?? 0;
+    const topNextTeam = Array.from(pm.nextTeamMarkets.values()).reduce((max, m) => Math.max(max, m.yesPrice), 0);
+    if (tradeYes >= 95 || topNextTeam >= 95) {
+      resolvedPlayers.add(key);
+      continue; // Don't include in LLM context — already resolved
+    }
+
     const tradePrice = pm.tradeMarket ? `NFLTRADE YES: ${pm.tradeMarket.yesPrice}¢` : "No trade market";
     const topTeams = Array.from(pm.nextTeamMarkets.entries())
       .sort((a, b) => b[1].yesPrice - a[1].yesPrice)
@@ -1495,9 +1504,14 @@ async function runDeepAnalysis(): Promise<void> {
     marketContext += `- ${pm.playerName}: ${tradePrice} | Top teams: [${topTeams}] | Signals: ${signalCount}\n`;
   }
 
-  // 4. Build signal summary
+  if (resolvedPlayers.size > 0) {
+    console.log(`[DEEP] Skipping ${resolvedPlayers.size} resolved players (>= 95¢): ${Array.from(resolvedPlayers).slice(0, 10).join(", ")}`);
+  }
+
+  // 4. Build signal summary — exclude resolved players
   let signalSummary = "\nRECENT SIGNALS (last 48h):\n";
-  for (const s of signals.slice(-50)) { // Last 50 for context window
+  const unresolvedSignals = signals.filter(s => !resolvedPlayers.has((s.player_name || "").toLowerCase()));
+  for (const s of unresolvedSignals.slice(-50)) { // Last 50 for context window
     signalSummary += `- @${s.source_handle} (Tier ${s.source_tier}): ${s.event_type} ${s.confidence_tier} — ${s.player_name}` +
       (s.team ? ` → ${s.team}` : "") +
       ` | "${(s.tweet_text ?? "").substring(0, 100)}"\n`;
@@ -1621,13 +1635,21 @@ Respond with JSON only.`;
       await updateTeamContext(update);
     }
 
-    // 6c. Process arbitrage alerts
+    // 6c. Process arbitrage alerts — skip resolved players
     for (const alert of analysis.arbitrage_alerts ?? []) {
+      if (resolvedPlayers.has((alert.player_name || "").toLowerCase())) {
+        console.log(`[DEEP] Skipping arb alert for resolved player: ${alert.player_name}`);
+        continue;
+      }
       await processArbitrageAlert(alert);
     }
 
-    // 6d. Process signal stacks
+    // 6d. Process signal stacks — skip resolved players
     for (const stack of analysis.signal_stacks ?? []) {
+      if (resolvedPlayers.has((stack.player_name || "").toLowerCase())) {
+        console.log(`[DEEP] Skipping signal stack for resolved player: ${stack.player_name}`);
+        continue;
+      }
       await processSignalStack(stack);
     }
 
@@ -1788,6 +1810,17 @@ async function processSignalStack(stack: {
   reasoning: string;
 }): Promise<void> {
   console.log(`[STACK] ${stack.player_name} → ${stack.destination_team}: confidence ${stack.combined_confidence}% (${stack.contributing_signals} signals)`);
+
+  // Skip resolved/maxed-out players — no point trading at 95¢+
+  const pm = findPlayerMarkets(stack.player_name);
+  if (pm) {
+    const tradeYes = pm.tradeMarket?.yesPrice ?? 0;
+    const topNextTeam = Array.from(pm.nextTeamMarkets.values()).reduce((max, m) => Math.max(max, m.yesPrice), 0);
+    if (tradeYes >= 95 || topNextTeam >= 95) {
+      console.log(`[STACK] Skipping ${stack.player_name}: market already resolved (trade=${tradeYes}¢, topNextTeam=${topNextTeam}¢)`);
+      return;
+    }
+  }
 
   // Only create synthetic signal if combined confidence >= 50%
   if (stack.combined_confidence < 50) {
