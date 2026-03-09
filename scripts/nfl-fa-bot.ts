@@ -34,7 +34,7 @@ const MIN_CONTRACTS = 5;
 const MAX_CONTRACTS = 100;
 
 // Timing
-const MARKET_REFRESH_MS = 30_000;
+const MARKET_REFRESH_MS = 15_000; // More current prices (was 30s)
 const DEEP_ANALYSIS_INTERVAL_MS = 5 * 60 * 1000;
 const STATE_SAVE_INTERVAL_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 15 * 60 * 1000;
@@ -95,7 +95,7 @@ const TWITTER_SOURCES: { handle: string; userId: string; tier: number }[] = [
 ];
 
 const TIER_POLL_MS: Record<number, number> = {
-  1: 3_000,
+  1: 1_500,   // Tighter polling for Tier 1 insiders (was 3s)
   2: 15_000,
   3: 60_000,
 };
@@ -439,6 +439,9 @@ async function placeOrder(
         quantity: quantity,
         market_type: ticker.includes("KXNFLTRADE") ? "nfltrade" : "nextteam",
         status: result.order?.status || "submitted",
+        primary_signal_id: signal.id || null,
+        confidence_tier_at_trade: signal.confidenceTier,
+        confidence_score_at_trade: signal.confidenceScore,
         meta: {
           source: BOT_ID,
           client_order_id: clientOrderId,
@@ -934,12 +937,12 @@ async function processTweet(
       llmClassification: null,
     };
 
-    // Fire trade + LLM in parallel
+    // Fire trade FIRST, save to DB in background, LLM in parallel
     const [, llmResult] = await Promise.all([
       (async () => {
         if (signal.playerName !== "UNKNOWN") {
-          const saved = await saveSignal(signal);
-          await executeTradesForSignal(saved);
+          await executeTradesForSignal(signal);
+          saveSignal(signal).catch(e => console.error("[SIGNAL] Background save error:", e));
         } else {
           console.log("[SIGNAL] Fast path skipped trade: no player identified");
         }
@@ -967,8 +970,8 @@ async function processTweet(
       if (signal.playerName === "UNKNOWN" && llmPlayer) {
         signal.playerName = llmPlayer;
         signal.destinationTeam = llmResult.team ?? signal.destinationTeam;
-        const saved = await saveSignal(signal);
-        await executeTradesForSignal(saved);
+        await executeTradesForSignal(signal);
+        saveSignal(signal).catch(e => console.error("[SIGNAL] Background save error:", e));
       }
     }
   } else {
@@ -1002,8 +1005,8 @@ async function processTweet(
       return;
     }
 
-    const saved = await saveSignal(signal);
-    await executeTradesForSignal(saved);
+    await executeTradesForSignal(signal);
+    saveSignal(signal).catch(e => console.error("[SIGNAL] Background save error:", e));
   }
 }
 
@@ -1515,6 +1518,13 @@ Your analysis MUST cover:
 5. NEGATIVE SIGNALS: Evidence deals collapsed, players less likely to move, situations that changed
 6. TEAM NEEDS: For each team appearing in signals, note positions FILLED by recent signings and positions still NEEDED
 
+CRITICAL EVENT TYPE RULES FOR signal_stacks:
+- "trade" = a team-to-team deal where a player is traded WITH draft pick/player compensation. One team sends the player, another receives them.
+- "signing" = a player signs with a new team in free agency. This includes "has agreed to a deal", "is signing with", "reached agreement". A player changing teams via free agency is ALWAYS "signing", NEVER "trade".
+- "cut"/"release" = a player is released/cut by their current team
+- "extension" = a player extends their contract with their CURRENT team
+- If multiple signals discuss a player "agreeing to a deal" or "signing with" a team, the event_type MUST be "signing", not "trade".
+
 Respond with JSON only.`;
 
   const userPrompt = `Provide your analysis as JSON with this structure:
@@ -1797,6 +1807,25 @@ async function processSignalStack(stack: {
     confidenceTier = "speculation";
   }
 
+  // Validate event type: don't let LLM override to "trade" if no source signals mention trade
+  const VALID_EVENT_TYPES: EventType[] = ["trade", "signing", "cut", "release", "extension", "rumor", "cap_move"];
+  let validatedEventType: EventType = VALID_EVENT_TYPES.includes(stack.event_type as EventType)
+    ? (stack.event_type as EventType)
+    : "rumor"; // Default to rumor (no trade action), not signing
+
+  if (validatedEventType === "trade") {
+    const playerSignals = recentSignals.filter(
+      s => s.playerName.toLowerCase() === stack.player_name.toLowerCase()
+    );
+    const hasTradeSignal = playerSignals.some(s => s.eventType === "trade");
+    if (!hasTradeSignal && playerSignals.length > 0) {
+      const dominantType = playerSignals.some(s => s.eventType === "signing")
+        ? "signing" as EventType : "rumor" as EventType;
+      console.log(`[STACK] Overriding LLM event_type "trade" → "${dominantType}" for ${stack.player_name} (no source signals mention trade)`);
+      validatedEventType = dominantType;
+    }
+  }
+
   // Create synthetic signal
   const syntheticSignal: Signal = {
     id: "",
@@ -1805,7 +1834,7 @@ async function processSignalStack(stack: {
     sourceHandle: "deep-analysis",
     sourceTier: 1,
     playerName: stack.player_name,
-    eventType: (stack.event_type as EventType) ?? "signing",
+    eventType: validatedEventType,
     confidenceTier,
     confidenceScore: stack.combined_confidence,
     destinationTeam: stack.destination_team,

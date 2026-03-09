@@ -56,6 +56,7 @@ export async function GET() {
     // Fetch Kalshi balance and portfolio
     let balance = null;
     let activePositionsCount = 0;
+    let nflPositions: any[] = [];
 
     if (KALSHI_API_KEY_ID && KALSHI_PRIVATE_KEY) {
       // Fetch balance
@@ -76,9 +77,11 @@ export async function GET() {
       const posResp = await fetch(`https://api.elections.kalshi.com${posPath}`, { headers: posHeaders });
       const posData = await posResp.json();
 
-      activePositionsCount = (posData.market_positions || []).filter(
-        (p: any) => p.position !== 0 && (p.ticker.includes("NFLFA") || p.ticker.includes("NEXTTEAMNFL"))
-      ).length;
+      nflPositions = (posData.market_positions || []).filter(
+        (p: any) => (p.position !== 0 || p.no_position !== 0) &&
+          (p.ticker.includes("NFLTRADE") || p.ticker.includes("NEXTTEAMNFL") || p.ticker.includes("NFLFA"))
+      );
+      activePositionsCount = nflPositions.length;
     }
 
     // Count total nfl_trades
@@ -94,6 +97,7 @@ export async function GET() {
       bot_status: botStatus || null,
       balance,
       active_positions: activePositionsCount,
+      positions: nflPositions,
       total_trades: tradesCount || 0,
       fetched_at: new Date().toISOString(),
     });

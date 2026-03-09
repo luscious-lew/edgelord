@@ -711,6 +711,7 @@ export default function NflFaPage() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
+  const [positions, setPositions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedPlayer, setExpandedPlayer] = useState<string | null>(null);
   const [showTeamView, setShowTeamView] = useState(false);
@@ -744,6 +745,32 @@ export default function NflFaPage() {
             created_at: s.created_at,
           })),
           analyst_context: p.context_summary,
+          trade_history: (p.trades ?? []).map((t: any) => ({
+            id: t.id,
+            side: t.side,
+            action: t.action,
+            price: t.price_cents,
+            count: t.quantity,
+            created_at: t.created_at,
+            reason: `${t.meta?.event_type ?? ""} ${t.market_type ?? ""} ${t.market_ticker ?? ""}`,
+          })),
+          position_held: (() => {
+            const playerTrades = p.trades ?? [];
+            const tickers = playerTrades.map((t: any) => t.market_ticker).filter(Boolean);
+            const pos = positions.find((pos: any) => tickers.includes(pos.ticker));
+            if (!pos) return undefined;
+            const side = pos.position > 0 ? "yes" : "no";
+            const contracts = pos.position > 0 ? pos.position : pos.no_position;
+            const avgEntry = pos.average_price_paid ?? 0;
+            const currentValue = side === "yes" ? (pos.market_price ?? 0) : (100 - (pos.market_price ?? 0));
+            return {
+              side,
+              contracts,
+              avg_entry: avgEntry,
+              current_value: currentValue,
+              unrealized_pnl: (currentValue - avgEntry) * contracts,
+            };
+          })(),
         }));
         setPlayers(mapped);
       }
@@ -752,7 +779,7 @@ export default function NflFaPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [positions]);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -788,6 +815,9 @@ export default function NflFaPage() {
         kill_switch: bs?.meta?.overrides?.killedPlayers?.length > 0 || false,
         size_multiplier: bs?.meta?.overrides?.positionSizeMultiplier ?? 1,
       });
+      if (data.positions) {
+        setPositions(data.positions);
+      }
     } catch (e) {
       console.error("Failed to fetch bot status:", e);
     }
