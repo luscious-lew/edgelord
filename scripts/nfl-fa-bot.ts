@@ -48,7 +48,7 @@ let lastLlmCallMs = 0;
 
 const CONFIDENCE_CONFIG = {
   confirmed:    { maxPrice: 95, sizeMultiplier: 1.0 },
-  strong_intel: { maxPrice: 80, sizeMultiplier: 0.7 },
+  strong_intel: { maxPrice: 90, sizeMultiplier: 0.7 },
   developing:   { maxPrice: 55, sizeMultiplier: 0.4 },
   speculation:  { maxPrice: 0,  sizeMultiplier: 0 },
 } as const;
