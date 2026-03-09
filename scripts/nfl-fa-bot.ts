@@ -1182,12 +1182,20 @@ function findPlayerMarkets(playerName: string): PlayerMap | null {
     if (k === key) return pm;
   }
 
-  // Last-name partial match
+  // Last-name match only if first name also starts with same letter (avoid Trent Brown → AJ Brown)
   const nameParts = playerName.trim().split(/\s+/);
-  const lastName = nameParts[nameParts.length - 1]?.toLowerCase();
-  if (lastName && lastName.length >= 3) {
-    for (const [k, pm] of playerMarkets) {
-      if (k.endsWith(lastName)) return pm;
+  if (nameParts.length >= 2) {
+    const firstName = nameParts[0].toLowerCase();
+    const lastName = nameParts[nameParts.length - 1].toLowerCase();
+    if (lastName.length >= 3) {
+      for (const [k, pm] of playerMarkets) {
+        const kParts = k.split(" ");
+        if (kParts.length >= 2) {
+          const kLast = kParts[kParts.length - 1];
+          const kFirst = kParts[0];
+          if (kLast === lastName && kFirst[0] === firstName[0]) return pm;
+        }
+      }
     }
   }
 
