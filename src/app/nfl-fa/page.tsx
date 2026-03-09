@@ -74,6 +74,13 @@ type TeamInfo = {
   linked_players: { name: string; confidence: number }[];
 };
 
+type MarketPlayer = {
+  player_name: string;
+  trade_market: { ticker: string; yes_price: number; title: string } | null;
+  next_team_markets: { ticker: string; team: string; yes_price: number; title: string }[];
+  total_markets: number;
+};
+
 // =============================================================================
 // NFL TEAM DATA
 // =============================================================================
@@ -712,20 +719,30 @@ export default function NflFaPage() {
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
+  const [marketPlayers, setMarketPlayers] = useState<MarketPlayer[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedPlayer, setExpandedPlayer] = useState<string | null>(null);
   const [showTeamView, setShowTeamView] = useState(false);
+  const [activeTab, setActiveTab] = useState<"signals" | "markets">("signals");
 
   const fetchPlayers = useCallback(async () => {
     try {
       const resp = await fetch("/api/nfl/players");
       const data = await resp.json();
       if (data.players) {
-        const mapped: PlayerCard[] = data.players.map((p: any) => ({
+        const mapped: PlayerCard[] = data.players.map((p: any) => {
+          // Look up market data for this player
+          const mkt = marketPlayers.find(
+            m => m.player_name.toLowerCase() === (p.entity_name || "").toLowerCase()
+          );
+          return {
           name: p.entity_name,
           current_team: p.meta?.current_team ?? p.linked_entities?.current_team ?? "Unknown",
-          trade_price: 0,
-          next_team_outcomes: [],
+          trade_price: mkt?.trade_market?.yes_price ?? 0,
+          next_team_outcomes: (mkt?.next_team_markets ?? []).map(t => ({
+            team: t.team,
+            price: t.yes_price,
+          })),
           sentiment: p.sentiment_trajectory === "rising" ? "up" as const : p.sentiment_trajectory === "falling" ? "down" as const : "neutral" as const,
           signal_count_48h: p.signal_count ?? 0,
           latest_signal: p.recent_signals?.[0] ? {
@@ -771,7 +788,7 @@ export default function NflFaPage() {
               unrealized_pnl: (currentValue - avgEntry) * contracts,
             };
           })(),
-        }));
+        }});
         setPlayers(mapped);
       }
     } catch (e) {
@@ -779,7 +796,7 @@ export default function NflFaPage() {
     } finally {
       setLoading(false);
     }
-  }, [positions]);
+  }, [positions, marketPlayers]);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -845,6 +862,18 @@ export default function NflFaPage() {
     }
   }, []);
 
+  const fetchMarkets = useCallback(async () => {
+    try {
+      const resp = await fetch("/api/nfl/markets");
+      const data = await resp.json();
+      if (data.players) {
+        setMarketPlayers(data.players);
+      }
+    } catch (e) {
+      console.error("Failed to fetch markets:", e);
+    }
+  }, []);
+
   const sendOverride = useCallback(async (body: Record<string, unknown>) => {
     try {
       await fetch("/api/nfl/override", {
@@ -875,23 +904,26 @@ export default function NflFaPage() {
   );
 
   useEffect(() => {
+    fetchMarkets();
     fetchPlayers();
     fetchSignals();
     fetchStatus();
     fetchTeams();
 
+    const marketInterval = setInterval(fetchMarkets, 15000);
     const playerInterval = setInterval(fetchPlayers, 15000);
     const signalInterval = setInterval(fetchSignals, 10000);
     const statusInterval = setInterval(fetchStatus, 15000);
     const teamInterval = setInterval(fetchTeams, 60000);
 
     return () => {
+      clearInterval(marketInterval);
       clearInterval(playerInterval);
       clearInterval(signalInterval);
       clearInterval(statusInterval);
       clearInterval(teamInterval);
     };
-  }, [fetchPlayers, fetchSignals, fetchStatus, fetchTeams]);
+  }, [fetchMarkets, fetchPlayers, fetchSignals, fetchStatus, fetchTeams]);
 
   // Sort players by most recent signal activity
   const sortedPlayers = [...players].sort((a, b) => {
@@ -929,7 +961,100 @@ export default function NflFaPage() {
         onSizeMultiplier={handleSizeMultiplier}
       />
 
-      {/* Main Content - Three Column Layout */}
+      {/* Tab Switcher */}
+      <div className="flex gap-1 bg-edgelord-surface rounded-lg p-1 w-fit border border-edgelord-border">
+        <button
+          onClick={() => setActiveTab("signals")}
+          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+            activeTab === "signals"
+              ? "bg-edgelord-primary text-white"
+              : "text-edgelord-text-secondary hover:text-edgelord-text-primary"
+          }`}
+        >
+          Signals ({sortedPlayers.length} players)
+        </button>
+        <button
+          onClick={() => setActiveTab("markets")}
+          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+            activeTab === "markets"
+              ? "bg-edgelord-primary text-white"
+              : "text-edgelord-text-secondary hover:text-edgelord-text-primary"
+          }`}
+        >
+          Markets ({marketPlayers.length} players)
+        </button>
+      </div>
+
+      {/* Main Content */}
+      {activeTab === "markets" ? (
+        <div className="space-y-4">
+          <p className="text-xs text-edgelord-text-secondary">
+            All players with active Kalshi markets. Prices update every 15s.
+          </p>
+          <div className="bg-edgelord-surface rounded-lg border border-edgelord-border overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edgelord-border text-edgelord-text-secondary text-xs">
+                  <th className="text-left p-3">Player</th>
+                  <th className="text-right p-3">Trade YES</th>
+                  <th className="text-right p-3">Trade NO</th>
+                  <th className="text-left p-3">Top Destinations</th>
+                  <th className="text-right p-3">Markets</th>
+                </tr>
+              </thead>
+              <tbody>
+                {marketPlayers.map((mp) => (
+                  <tr key={mp.player_name} className="border-b border-edgelord-border/30 hover:bg-edgelord-bg/50">
+                    <td className="p-3 font-medium">{mp.player_name}</td>
+                    <td className="p-3 text-right">
+                      {mp.trade_market ? (
+                        <span className={`font-mono ${mp.trade_market.yes_price >= 50 ? "text-green-400" : "text-edgelord-text-primary"}`}>
+                          {mp.trade_market.yes_price}c
+                        </span>
+                      ) : (
+                        <span className="text-edgelord-text-secondary">-</span>
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      {mp.trade_market ? (
+                        <span className="font-mono text-edgelord-text-secondary">
+                          {100 - mp.trade_market.yes_price}c
+                        </span>
+                      ) : (
+                        <span className="text-edgelord-text-secondary">-</span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      <div className="flex flex-wrap gap-1.5">
+                        {mp.next_team_markets.slice(0, 4).map((t) => (
+                          <span
+                            key={t.ticker}
+                            className="inline-flex items-center gap-1 text-xs bg-edgelord-bg px-2 py-0.5 rounded"
+                          >
+                            {getTeamLogoUrl(t.team) && (
+                              <img src={getTeamLogoUrl(t.team)} alt="" className="w-3 h-3 object-contain" />
+                            )}
+                            <span className="text-edgelord-text-secondary">{t.team}</span>
+                            <span className={`font-mono ${t.yes_price >= 30 ? "text-green-400" : "text-edgelord-text-primary"}`}>
+                              {t.yes_price}c
+                            </span>
+                          </span>
+                        ))}
+                        {mp.next_team_markets.length > 4 && (
+                          <span className="text-xs text-edgelord-text-secondary">
+                            +{mp.next_team_markets.length - 4} more
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-3 text-right text-edgelord-text-secondary">{mp.total_markets}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Player Cards Grid - 3 columns */}
         <div className="lg:col-span-3 space-y-4">
@@ -981,6 +1106,7 @@ export default function NflFaPage() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Bottom Panel - Team View */}
       <div className="space-y-4">
