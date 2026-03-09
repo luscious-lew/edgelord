@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 
 // =============================================================================
 // TYPES
@@ -1024,9 +1024,8 @@ export default function NflFaPage() {
                     p => p.player_name.toLowerCase() === m.player_name.toLowerCase()
                   );
                   return (
-                    <>
+                    <Fragment key={m.ticker}>
                       <tr
-                        key={m.ticker}
                         className={`border-b border-edgelord-border/30 hover:bg-edgelord-bg/50 cursor-pointer ${isExpanded ? "bg-edgelord-bg/30" : ""}`}
                         onClick={() => setExpandedMarketRow(isExpanded ? null : `trade:${m.ticker}`)}
                       >
@@ -1106,7 +1105,7 @@ export default function NflFaPage() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -1139,9 +1138,8 @@ export default function NflFaPage() {
                   const top = p.teams[0];
                   const second = p.teams[1];
                   return (
-                    <>
+                    <Fragment key={p.player_name}>
                       <tr
-                        key={p.player_name}
                         className={`border-b border-edgelord-border/30 hover:bg-edgelord-bg/50 cursor-pointer ${isExpanded ? "bg-edgelord-bg/30" : ""}`}
                         onClick={() => setExpandedMarketRow(isExpanded ? null : `next:${p.player_name}`)}
                       >
@@ -1229,7 +1227,7 @@ export default function NflFaPage() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
