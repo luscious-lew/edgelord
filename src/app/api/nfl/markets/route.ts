@@ -1,124 +1,127 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const KALSHI_API_KEY_ID = process.env.KALSHI_API_KEY_ID ?? "";
+const KALSHI_PRIVATE_KEY = process.env.KALSHI_PRIVATE_KEY ?? "";
+const KALSHI_BASE = "https://api.elections.kalshi.com";
 
-// Extract player name from market title
-function extractPlayer(title: string): string | null {
-  // NFLTRADE: "Will Patrick Mahomes be traded?"
-  let m = title.match(/will\s+(.+?)\s+be\s+traded/i);
-  if (m) return m[1].trim();
-  m = title.match(/^(.+?)\s+traded\s+before/i);
-  if (m) return m[1].trim();
-  m = title.match(/will\s+(.+?)\s+sign\s+with/i);
-  if (m) return m[1].trim();
-  m = title.match(/will\s+(.+?)\s+leave/i);
-  if (m) return m[1].trim();
-  // NEXTTEAM: "What will be X's next team?" or "X's Next Team"
-  m = title.match(/what will be (.+?)(?:'s|'s) next team/i);
-  if (m) return m[1].trim();
-  m = title.match(/^(.+?)(?:'s|'s) next team/i);
-  if (m) return m[1].trim();
-  return null;
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  let normalized = pem.replace(/\s+/g, "");
+  if (normalized.includes("BEGINPRIVATEKEY")) {
+    normalized = normalized.replace("-----BEGINPRIVATEKEY-----", "").replace("-----ENDPRIVATEKEY-----", "");
+  } else if (pem.includes("BEGIN PRIVATE KEY")) {
+    normalized = pem.replace(/-----BEGIN PRIVATE KEY-----/g, "").replace(/-----END PRIVATE KEY-----/g, "").replace(/\s/g, "");
+  }
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
 }
 
-// Extract team from NEXTTEAM title
-function extractTeam(title: string): string | null {
-  const m = title.match(/next team[^:]*:\s*(.+)/i);
-  if (m) return m[1].trim();
-  return null;
+async function getKalshiHeaders(method: string, path: string): Promise<Headers> {
+  const timestamp = Date.now().toString();
+  const message = timestamp + method.toUpperCase() + path;
+  const keyBuffer = pemToArrayBuffer(KALSHI_PRIVATE_KEY);
+  const privateKey = await crypto.subtle.importKey("pkcs8", keyBuffer, { name: "RSA-PSS", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, privateKey, new TextEncoder().encode(message));
+  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+
+  const headers = new Headers();
+  headers.set("KALSHI-ACCESS-KEY", KALSHI_API_KEY_ID);
+  headers.set("KALSHI-ACCESS-TIMESTAMP", timestamp);
+  headers.set("KALSHI-ACCESS-SIGNATURE", signatureB64);
+  headers.set("Content-Type", "application/json");
+  return headers;
 }
 
-interface PlayerMarketData {
-  player_name: string;
-  trade_market: {
-    ticker: string;
-    yes_price: number;
-    title: string;
-  } | null;
-  next_team_markets: {
-    ticker: string;
-    team: string;
-    yes_price: number;
-    title: string;
-  }[];
-  total_markets: number;
+function extractPlayerName(title: string, type: "nfltrade" | "nextteam"): string | null {
+  if (type === "nfltrade") {
+    let m = title.match(/will\s+(.+?)\s+be\s+traded/i);
+    if (m) return m[1].trim();
+    m = title.match(/^(.+?)\s+traded\s+before/i);
+    if (m) return m[1].trim();
+    m = title.match(/will\s+(.+?)\s+sign\s+with/i);
+    if (m) return m[1].trim();
+    m = title.match(/will\s+(.+?)\s+leave/i);
+    if (m) return m[1].trim();
+  }
+  if (type === "nextteam") {
+    let m = title.match(/what will be (.+?)(?:'s|'s) next team/i);
+    if (m) return m[1].trim();
+    m = title.match(/^(.+?)(?:'s|'s) next team/i);
+    if (m) return m[1].trim();
+  }
+  return null;
 }
 
 export async function GET() {
   try {
-    // Fetch all NFL markets from the markets table
-    const { data: markets, error } = await supabase
-      .from("markets")
-      .select("*")
-      .or("venue_series_ticker.eq.KXNFLTRADE,venue_series_ticker.eq.KXNEXTTEAMNFL")
-      .eq("status", "open")
-      .order("title", { ascending: true });
-
-    if (error) {
-      console.error("[NFL MARKETS API] Error:", error);
-      return NextResponse.json({ error: "Failed to fetch markets" }, { status: 500 });
+    if (!KALSHI_API_KEY_ID || !KALSHI_PRIVATE_KEY) {
+      return NextResponse.json({ error: "Kalshi credentials not configured" }, { status: 500 });
     }
 
-    // Group by player
-    const playerMap = new Map<string, PlayerMarketData>();
+    // Fetch NFLTRADE markets
+    const tradePath = "/trade-api/v2/markets?series_ticker=KXNFLTRADE&status=open&limit=200";
+    const tradeHeaders = await getKalshiHeaders("GET", tradePath);
+    const tradeResp = await fetch(`${KALSHI_BASE}${tradePath}`, { headers: tradeHeaders });
+    const tradeData = await tradeResp.json();
 
-    for (const market of markets || []) {
-      const playerName = extractPlayer(market.title || "");
+    // Fetch NEXTTEAM markets
+    const nextPath = "/trade-api/v2/markets?series_ticker=KXNEXTTEAMNFL&status=open&limit=200";
+    const nextHeaders = await getKalshiHeaders("GET", nextPath);
+    const nextResp = await fetch(`${KALSHI_BASE}${nextPath}`, { headers: nextHeaders });
+    const nextData = await nextResp.json();
+
+    // Build NFLTRADE list
+    const tradeMarkets = (tradeData.markets ?? []).map((m: any) => ({
+      ticker: m.ticker,
+      player_name: extractPlayerName(m.title ?? "", "nfltrade") ?? m.ticker,
+      title: m.title,
+      yes_price: m.last_price ?? 50,
+      volume: m.volume ?? 0,
+      open_interest: m.open_interest ?? 0,
+    })).sort((a: any, b: any) => b.yes_price - a.yes_price);
+
+    // Build NEXTTEAM grouped by player
+    const nextTeamByPlayer = new Map<string, {
+      player_name: string;
+      teams: { ticker: string; team: string; yes_price: number; volume: number }[];
+    }>();
+
+    for (const m of nextData.markets ?? []) {
+      const playerName = extractPlayerName(m.title ?? "", "nextteam");
       if (!playerName) continue;
 
       const key = playerName.toLowerCase();
-      if (!playerMap.has(key)) {
-        playerMap.set(key, {
-          player_name: playerName,
-          trade_market: null,
-          next_team_markets: [],
-          total_markets: 0,
-        });
+      if (!nextTeamByPlayer.has(key)) {
+        nextTeamByPlayer.set(key, { player_name: playerName, teams: [] });
       }
 
-      const pm = playerMap.get(key)!;
-      const yesPrice = Math.round((market.yes_price_last ?? 0) * 100);
+      // Extract team from subtitle or custom_strike
+      const team = m.yes_sub_title || m.custom_strike?.Team || m.ticker.split("-").pop() || "Unknown";
 
-      if (market.venue_series_ticker === "KXNFLTRADE") {
-        pm.trade_market = {
-          ticker: market.venue_market_ticker,
-          yes_price: yesPrice,
-          title: market.title,
-        };
-      } else if (market.venue_series_ticker === "KXNEXTTEAMNFL") {
-        const team = extractTeam(market.title) || market.venue_market_ticker;
-        pm.next_team_markets.push({
-          ticker: market.venue_market_ticker,
-          team,
-          yes_price: yesPrice,
-          title: market.title,
-        });
-      }
-
-      pm.total_markets++;
+      nextTeamByPlayer.get(key)!.teams.push({
+        ticker: m.ticker,
+        team,
+        yes_price: m.last_price ?? 0,
+        volume: m.volume ?? 0,
+      });
     }
 
-    // Sort next_team_markets by price descending
-    for (const pm of playerMap.values()) {
-      pm.next_team_markets.sort((a, b) => b.yes_price - a.yes_price);
-    }
-
-    // Convert to array, sort by trade market price (most active first)
-    const players = Array.from(playerMap.values()).sort((a, b) => {
-      const aPrice = a.trade_market?.yes_price ?? 0;
-      const bPrice = b.trade_market?.yes_price ?? 0;
-      // Sort by trade price descending (most likely to move first), then by total markets
-      return bPrice - aPrice || b.total_markets - a.total_markets;
-    });
+    // Sort teams within each player by price descending
+    const nextTeamPlayers = Array.from(nextTeamByPlayer.values()).map(p => ({
+      ...p,
+      teams: p.teams.sort((a, b) => b.yes_price - a.yes_price),
+      top_price: p.teams.reduce((max, t) => Math.max(max, t.yes_price), 0),
+    })).sort((a, b) => b.top_price - a.top_price);
 
     return NextResponse.json({
-      players,
-      total_markets: (markets || []).length,
-      total_players: players.length,
+      trade_markets: tradeMarkets,
+      next_team_players: nextTeamPlayers,
+      counts: {
+        trade_markets: tradeMarkets.length,
+        next_team_players: nextTeamPlayers.length,
+        next_team_markets: (nextData.markets ?? []).length,
+      },
       fetched_at: new Date().toISOString(),
     });
   } catch (error) {

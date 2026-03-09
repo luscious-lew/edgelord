@@ -74,11 +74,19 @@ type TeamInfo = {
   linked_players: { name: string; confidence: number }[];
 };
 
-type MarketPlayer = {
+type TradeMarket = {
+  ticker: string;
   player_name: string;
-  trade_market: { ticker: string; yes_price: number; title: string } | null;
-  next_team_markets: { ticker: string; team: string; yes_price: number; title: string }[];
-  total_markets: number;
+  title: string;
+  yes_price: number;
+  volume: number;
+  open_interest: number;
+};
+
+type NextTeamPlayer = {
+  player_name: string;
+  teams: { ticker: string; team: string; yes_price: number; volume: number }[];
+  top_price: number;
 };
 
 // =============================================================================
@@ -719,11 +727,13 @@ export default function NflFaPage() {
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
-  const [marketPlayers, setMarketPlayers] = useState<MarketPlayer[]>([]);
+  const [tradeMarkets, setTradeMarkets] = useState<TradeMarket[]>([]);
+  const [nextTeamPlayers, setNextTeamPlayers] = useState<NextTeamPlayer[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedPlayer, setExpandedPlayer] = useState<string | null>(null);
+  const [expandedMarketRow, setExpandedMarketRow] = useState<string | null>(null);
   const [showTeamView, setShowTeamView] = useState(false);
-  const [activeTab, setActiveTab] = useState<"signals" | "markets">("signals");
+  const [activeTab, setActiveTab] = useState<"signals" | "traded" | "nextteam">("signals");
 
   const fetchPlayers = useCallback(async () => {
     try {
@@ -732,14 +742,17 @@ export default function NflFaPage() {
       if (data.players) {
         const mapped: PlayerCard[] = data.players.map((p: any) => {
           // Look up market data for this player
-          const mkt = marketPlayers.find(
+          const tradeMkt = tradeMarkets.find(
+            m => m.player_name.toLowerCase() === (p.entity_name || "").toLowerCase()
+          );
+          const nextTeam = nextTeamPlayers.find(
             m => m.player_name.toLowerCase() === (p.entity_name || "").toLowerCase()
           );
           return {
           name: p.entity_name,
           current_team: p.meta?.current_team ?? p.linked_entities?.current_team ?? "Unknown",
-          trade_price: mkt?.trade_market?.yes_price ?? 0,
-          next_team_outcomes: (mkt?.next_team_markets ?? []).map(t => ({
+          trade_price: tradeMkt?.yes_price ?? 0,
+          next_team_outcomes: (nextTeam?.teams ?? []).map(t => ({
             team: t.team,
             price: t.yes_price,
           })),
@@ -796,7 +809,7 @@ export default function NflFaPage() {
     } finally {
       setLoading(false);
     }
-  }, [positions, marketPlayers]);
+  }, [positions, tradeMarkets, nextTeamPlayers]);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -866,9 +879,8 @@ export default function NflFaPage() {
     try {
       const resp = await fetch("/api/nfl/markets");
       const data = await resp.json();
-      if (data.players) {
-        setMarketPlayers(data.players);
-      }
+      if (data.trade_markets) setTradeMarkets(data.trade_markets);
+      if (data.next_team_players) setNextTeamPlayers(data.next_team_players);
     } catch (e) {
       console.error("Failed to fetch markets:", e);
     }
@@ -963,93 +975,213 @@ export default function NflFaPage() {
 
       {/* Tab Switcher */}
       <div className="flex gap-1 bg-edgelord-surface rounded-lg p-1 w-fit border border-edgelord-border">
-        <button
-          onClick={() => setActiveTab("signals")}
-          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
-            activeTab === "signals"
-              ? "bg-edgelord-primary text-white"
-              : "text-edgelord-text-secondary hover:text-edgelord-text-primary"
-          }`}
-        >
-          Signals ({sortedPlayers.length} players)
-        </button>
-        <button
-          onClick={() => setActiveTab("markets")}
-          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
-            activeTab === "markets"
-              ? "bg-edgelord-primary text-white"
-              : "text-edgelord-text-secondary hover:text-edgelord-text-primary"
-          }`}
-        >
-          Markets ({marketPlayers.length} players)
-        </button>
+        {(["signals", "traded", "nextteam"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+              activeTab === tab
+                ? "bg-edgelord-primary text-white"
+                : "text-edgelord-text-secondary hover:text-edgelord-text-primary"
+            }`}
+          >
+            {tab === "signals" ? `Signals (${sortedPlayers.length})` :
+             tab === "traded" ? `Traded? (${tradeMarkets.length})` :
+             `Next Team (${nextTeamPlayers.length})`}
+          </button>
+        ))}
       </div>
 
-      {/* Main Content */}
-      {activeTab === "markets" ? (
+      {/* TRADED? TAB */}
+      {activeTab === "traded" ? (
         <div className="space-y-4">
           <p className="text-xs text-edgelord-text-secondary">
-            All players with active Kalshi markets. Prices update every 15s.
+            NFLTRADE markets — will this player be traded? Sorted by YES probability. Prices from Kalshi, updated every 15s.
           </p>
           <div className="bg-edgelord-surface rounded-lg border border-edgelord-border overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-edgelord-border text-edgelord-text-secondary text-xs">
                   <th className="text-left p-3">Player</th>
-                  <th className="text-right p-3">Trade YES</th>
-                  <th className="text-right p-3">Trade NO</th>
-                  <th className="text-left p-3">Top Destinations</th>
-                  <th className="text-right p-3">Markets</th>
+                  <th className="text-right p-3">YES</th>
+                  <th className="text-right p-3">NO</th>
+                  <th className="p-3 w-1/3">Probability</th>
+                  <th className="text-right p-3">Volume</th>
+                  <th className="text-right p-3">Ticker</th>
                 </tr>
               </thead>
               <tbody>
-                {marketPlayers.map((mp) => (
-                  <tr key={mp.player_name} className="border-b border-edgelord-border/30 hover:bg-edgelord-bg/50">
-                    <td className="p-3 font-medium">{mp.player_name}</td>
-                    <td className="p-3 text-right">
-                      {mp.trade_market ? (
-                        <span className={`font-mono ${mp.trade_market.yes_price >= 50 ? "text-green-400" : "text-edgelord-text-primary"}`}>
-                          {mp.trade_market.yes_price}c
-                        </span>
-                      ) : (
-                        <span className="text-edgelord-text-secondary">-</span>
+                {tradeMarkets.map((m) => {
+                  const isExpanded = expandedMarketRow === `trade:${m.ticker}`;
+                  const ntPlayer = nextTeamPlayers.find(
+                    p => p.player_name.toLowerCase() === m.player_name.toLowerCase()
+                  );
+                  return (
+                    <>
+                      <tr
+                        key={m.ticker}
+                        className={`border-b border-edgelord-border/30 hover:bg-edgelord-bg/50 cursor-pointer ${isExpanded ? "bg-edgelord-bg/30" : ""}`}
+                        onClick={() => setExpandedMarketRow(isExpanded ? null : `trade:${m.ticker}`)}
+                      >
+                        <td className="p-3 font-medium">{m.player_name}</td>
+                        <td className="p-3 text-right">
+                          <span className={`font-mono font-bold ${m.yes_price >= 50 ? "text-green-400" : "text-edgelord-text-primary"}`}>
+                            {m.yes_price}c
+                          </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <span className="font-mono text-red-400">{100 - m.yes_price}c</span>
+                        </td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 bg-edgelord-bg rounded-full h-4 relative overflow-hidden">
+                              <div
+                                className={`h-4 rounded-full transition-all ${m.yes_price >= 50 ? "bg-green-500" : "bg-blue-500"}`}
+                                style={{ width: `${Math.max(m.yes_price, 2)}%` }}
+                              />
+                              <span className="absolute inset-0 flex items-center justify-center text-[10px] font-mono text-white drop-shadow">
+                                {m.yes_price}%
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-3 text-right text-edgelord-text-secondary font-mono">{m.volume.toLocaleString()}</td>
+                        <td className="p-3 text-right text-edgelord-text-secondary text-xs font-mono">{m.ticker}</td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${m.ticker}-detail`}>
+                          <td colSpan={6} className="p-0">
+                            <div className="bg-edgelord-bg/50 p-4 border-b border-edgelord-border space-y-3">
+                              <div className="text-xs text-edgelord-text-secondary">{m.title}</div>
+                              {ntPlayer && ntPlayer.teams.length > 0 ? (
+                                <div>
+                                  <h4 className="text-xs font-semibold mb-2">NEXTTEAM Destinations</h4>
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                                    {ntPlayer.teams.map(t => (
+                                      <div key={t.ticker} className="flex items-center gap-2 bg-edgelord-surface rounded p-2">
+                                        {getTeamLogoUrl(t.team) && (
+                                          <img src={getTeamLogoUrl(t.team)} alt="" className="w-5 h-5 object-contain" />
+                                        )}
+                                        <span className="text-xs truncate">{t.team}</span>
+                                        <span className={`text-xs font-mono ml-auto ${t.yes_price >= 30 ? "text-green-400" : ""}`}>
+                                          {t.yes_price}c
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-edgelord-text-secondary">No NEXTTEAM markets for this player</p>
+                              )}
+                              <div className="flex gap-4 text-xs text-edgelord-text-secondary">
+                                <span>Open Interest: {m.open_interest.toLocaleString()}</span>
+                                <span>Volume: {m.volume.toLocaleString()}</span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="p-3 text-right">
-                      {mp.trade_market ? (
-                        <span className="font-mono text-edgelord-text-secondary">
-                          {100 - mp.trade_market.yes_price}c
-                        </span>
-                      ) : (
-                        <span className="text-edgelord-text-secondary">-</span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex flex-wrap gap-1.5">
-                        {mp.next_team_markets.slice(0, 4).map((t) => (
-                          <span
-                            key={t.ticker}
-                            className="inline-flex items-center gap-1 text-xs bg-edgelord-bg px-2 py-0.5 rounded"
-                          >
-                            {getTeamLogoUrl(t.team) && (
-                              <img src={getTeamLogoUrl(t.team)} alt="" className="w-3 h-3 object-contain" />
-                            )}
-                            <span className="text-edgelord-text-secondary">{t.team}</span>
-                            <span className={`font-mono ${t.yes_price >= 30 ? "text-green-400" : "text-edgelord-text-primary"}`}>
-                              {t.yes_price}c
+                    </>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : activeTab === "nextteam" ? (
+        <div className="space-y-4">
+          <p className="text-xs text-edgelord-text-secondary">
+            NEXTTEAM markets — which team will this player join? Sorted by highest destination price. Click to expand all teams.
+          </p>
+          <div className="bg-edgelord-surface rounded-lg border border-edgelord-border overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edgelord-border text-edgelord-text-secondary text-xs">
+                  <th className="text-left p-3">Player</th>
+                  <th className="text-left p-3">Top Destination</th>
+                  <th className="text-right p-3">Price</th>
+                  <th className="text-left p-3">Runner-up</th>
+                  <th className="text-right p-3">Price</th>
+                  <th className="text-right p-3">Teams</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nextTeamPlayers.map((p) => {
+                  const isExpanded = expandedMarketRow === `next:${p.player_name}`;
+                  const top = p.teams[0];
+                  const second = p.teams[1];
+                  return (
+                    <>
+                      <tr
+                        key={p.player_name}
+                        className={`border-b border-edgelord-border/30 hover:bg-edgelord-bg/50 cursor-pointer ${isExpanded ? "bg-edgelord-bg/30" : ""}`}
+                        onClick={() => setExpandedMarketRow(isExpanded ? null : `next:${p.player_name}`)}
+                      >
+                        <td className="p-3 font-medium">{p.player_name}</td>
+                        <td className="p-3">
+                          {top && (
+                            <div className="flex items-center gap-1.5">
+                              {getTeamLogoUrl(top.team) && (
+                                <img src={getTeamLogoUrl(top.team)} alt="" className="w-5 h-5 object-contain" />
+                              )}
+                              <span className="text-xs">{top.team}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          {top && (
+                            <span className={`font-mono font-bold ${top.yes_price >= 50 ? "text-green-400" : ""}`}>
+                              {top.yes_price}c
                             </span>
-                          </span>
-                        ))}
-                        {mp.next_team_markets.length > 4 && (
-                          <span className="text-xs text-edgelord-text-secondary">
-                            +{mp.next_team_markets.length - 4} more
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="p-3 text-right text-edgelord-text-secondary">{mp.total_markets}</td>
-                  </tr>
-                ))}
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {second && (
+                            <div className="flex items-center gap-1.5">
+                              {getTeamLogoUrl(second.team) && (
+                                <img src={getTeamLogoUrl(second.team)} alt="" className="w-5 h-5 object-contain" />
+                              )}
+                              <span className="text-xs">{second.team}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          {second && <span className="font-mono text-edgelord-text-secondary">{second.yes_price}c</span>}
+                        </td>
+                        <td className="p-3 text-right text-edgelord-text-secondary">{p.teams.length}</td>
+                      </tr>
+                      {isExpanded && (
+                        <tr key={`${p.player_name}-detail`}>
+                          <td colSpan={6} className="p-0">
+                            <div className="bg-edgelord-bg/50 p-4 border-b border-edgelord-border">
+                              <h4 className="text-xs font-semibold mb-3">All Destinations for {p.player_name}</h4>
+                              <div className="space-y-1.5">
+                                {p.teams.map(t => (
+                                  <div key={t.ticker} className="flex items-center gap-2">
+                                    {getTeamLogoUrl(t.team) && (
+                                      <img src={getTeamLogoUrl(t.team)} alt="" className="w-5 h-5 object-contain" />
+                                    )}
+                                    <span className="text-xs w-28 truncate">{t.team}</span>
+                                    <div className="flex-1 bg-edgelord-bg rounded-full h-3 relative overflow-hidden">
+                                      <div
+                                        className={`h-3 rounded-full ${t.yes_price >= 30 ? "bg-green-500" : "bg-blue-500"}`}
+                                        style={{ width: `${Math.max(t.yes_price, 1)}%` }}
+                                      />
+                                    </div>
+                                    <span className={`text-xs font-mono w-10 text-right ${t.yes_price >= 30 ? "text-green-400" : ""}`}>
+                                      {t.yes_price}c
+                                    </span>
+                                    <span className="text-[10px] text-edgelord-text-secondary font-mono">{t.ticker}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })}
               </tbody>
             </table>
           </div>
