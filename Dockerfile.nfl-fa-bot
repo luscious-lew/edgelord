@@ -1,0 +1,13 @@
+# NFL Free Agency Bot - Real-time signal processing and trading
+FROM denoland/deno:2.0.0
+
+WORKDIR /app
+
+# Copy the bot script
+COPY scripts/nfl-fa-bot.ts ./
+
+# Cache dependencies
+RUN deno cache nfl-fa-bot.ts
+
+# Run the bot
+CMD ["deno", "run", "--allow-net", "--allow-env", "nfl-fa-bot.ts"]
