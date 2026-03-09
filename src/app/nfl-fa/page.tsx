@@ -81,12 +81,17 @@ type TradeMarket = {
   yes_price: number;
   volume: number;
   open_interest: number;
+  signal_count: number;
+  position: { side: string; contracts: number } | null;
 };
 
 type NextTeamPlayer = {
   player_name: string;
-  teams: { ticker: string; team: string; yes_price: number; volume: number }[];
+  teams: { ticker: string; team: string; yes_price: number; volume: number; position: any }[];
   top_price: number;
+  total_volume: number;
+  signal_count: number;
+  has_position: boolean;
 };
 
 // =============================================================================
@@ -1005,9 +1010,11 @@ export default function NflFaPage() {
                   <th className="text-left p-3">Player</th>
                   <th className="text-right p-3">YES</th>
                   <th className="text-right p-3">NO</th>
-                  <th className="p-3 w-1/3">Probability</th>
-                  <th className="text-right p-3">Volume</th>
-                  <th className="text-right p-3">Ticker</th>
+                  <th className="p-3 w-1/4">Probability</th>
+                  <th className="text-right p-3">Vol (contracts)</th>
+                  <th className="text-right p-3">OI</th>
+                  <th className="text-center p-3">Signals</th>
+                  <th className="text-center p-3">Position</th>
                 </tr>
               </thead>
               <tbody>
@@ -1045,12 +1052,30 @@ export default function NflFaPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="p-3 text-right text-edgelord-text-secondary font-mono">{m.volume.toLocaleString()}</td>
-                        <td className="p-3 text-right text-edgelord-text-secondary text-xs font-mono">{m.ticker}</td>
+                        <td className="p-3 text-right text-edgelord-text-secondary font-mono text-xs">{m.volume.toLocaleString()}</td>
+                        <td className="p-3 text-right text-edgelord-text-secondary font-mono text-xs">{m.open_interest.toLocaleString()}</td>
+                        <td className="p-3 text-center">
+                          {m.signal_count > 0 ? (
+                            <span className="text-xs bg-edgelord-primary/20 text-edgelord-primary px-1.5 py-0.5 rounded">{m.signal_count}</span>
+                          ) : (
+                            <span className="text-edgelord-text-secondary text-xs">-</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-center">
+                          {m.position ? (
+                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                              m.position.side === "yes" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                            }`}>
+                              {m.position.side.toUpperCase()} x{m.position.contracts}
+                            </span>
+                          ) : (
+                            <span className="text-edgelord-text-secondary text-xs">-</span>
+                          )}
+                        </td>
                       </tr>
                       {isExpanded && (
                         <tr key={`${m.ticker}-detail`}>
-                          <td colSpan={6} className="p-0">
+                          <td colSpan={8} className="p-0">
                             <div className="bg-edgelord-bg/50 p-4 border-b border-edgelord-border space-y-3">
                               <div className="text-xs text-edgelord-text-secondary">{m.title}</div>
                               {ntPlayer && ntPlayer.teams.length > 0 ? (
@@ -1102,6 +1127,9 @@ export default function NflFaPage() {
                   <th className="text-right p-3">Price</th>
                   <th className="text-left p-3">Runner-up</th>
                   <th className="text-right p-3">Price</th>
+                  <th className="text-right p-3">Vol</th>
+                  <th className="text-center p-3">Signals</th>
+                  <th className="text-center p-3">Position</th>
                   <th className="text-right p-3">Teams</th>
                 </tr>
               </thead>
@@ -1148,11 +1176,26 @@ export default function NflFaPage() {
                         <td className="p-3 text-right">
                           {second && <span className="font-mono text-edgelord-text-secondary">{second.yes_price}c</span>}
                         </td>
+                        <td className="p-3 text-right text-edgelord-text-secondary font-mono text-xs">{p.total_volume.toLocaleString()}</td>
+                        <td className="p-3 text-center">
+                          {p.signal_count > 0 ? (
+                            <span className="text-xs bg-edgelord-primary/20 text-edgelord-primary px-1.5 py-0.5 rounded">{p.signal_count}</span>
+                          ) : (
+                            <span className="text-edgelord-text-secondary text-xs">-</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-center">
+                          {p.has_position ? (
+                            <span className="text-xs bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded">HELD</span>
+                          ) : (
+                            <span className="text-edgelord-text-secondary text-xs">-</span>
+                          )}
+                        </td>
                         <td className="p-3 text-right text-edgelord-text-secondary">{p.teams.length}</td>
                       </tr>
                       {isExpanded && (
                         <tr key={`${p.player_name}-detail`}>
-                          <td colSpan={6} className="p-0">
+                          <td colSpan={9} className="p-0">
                             <div className="bg-edgelord-bg/50 p-4 border-b border-edgelord-border">
                               <h4 className="text-xs font-semibold mb-3">All Destinations for {p.player_name}</h4>
                               <div className="space-y-1.5">
@@ -1171,7 +1214,14 @@ export default function NflFaPage() {
                                     <span className={`text-xs font-mono w-10 text-right ${t.yes_price >= 30 ? "text-green-400" : ""}`}>
                                       {t.yes_price}c
                                     </span>
-                                    <span className="text-[10px] text-edgelord-text-secondary font-mono">{t.ticker}</span>
+                                    {t.position && (
+                                      <span className={`text-[10px] px-1 py-0.5 rounded ${
+                                        t.position.side === "yes" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                                      }`}>
+                                        {t.position.side.toUpperCase()} x{t.position.contracts}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] text-edgelord-text-secondary font-mono w-12 text-right">{t.volume > 0 ? t.volume : ""}</span>
                                   </div>
                                 ))}
                               </div>
